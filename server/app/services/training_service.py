@@ -131,7 +131,26 @@ def write_training_dataset_config(dataset: dict[str, Any], images: list[dict[str
     return {"path": str(dataset_config_path), "imageDir": str(image_dir), "rows": rows}
 
 
+def validate_training_runtime(extra_paths: list[Path] | None = None) -> None:
+    missing: list[str] = []
+    for path, label in [
+        (MUSUBI_PYTHON, "musubi Python"),
+        (MUSUBI_ACCELERATE, "accelerate"),
+        (QWEN_IMAGE_DIT, "Qwen Image DiT"),
+        (QWEN_IMAGE_VAE, "Qwen Image VAE"),
+        (QWEN_IMAGE_TEXT_ENCODER, "Qwen Image text encoder"),
+    ]:
+        if not path.exists():
+            missing.append(f"{label}: {path}")
+    for path in extra_paths or []:
+        if not path.exists():
+            missing.append(str(path))
+    if missing:
+        raise RuntimeError(f"训练依赖不存在：{', '.join(missing)}")
+
+
 def create_training_job(body: dict[str, Any]) -> dict[str, Any]:
+    validate_training_runtime()
     dataset_id = str(body.get("datasetId") or "")
     if not dataset_id:
         raise RuntimeError("必须选择数据集")
@@ -178,7 +197,7 @@ def create_training_job(body: dict[str, Any]) -> dict[str, Any]:
         "trigger": dataset.get("trigger"),
         "baseModel": config["baseModel"],
         "strength": float(body.get("strength") or 0.8),
-        "status": "等待GPU训练",
+        "status": "准备中",
         "runId": run_id,
         "runDir": str(run_dir),
         "configPath": str(run_dir / "train_config.json"),
@@ -194,10 +213,7 @@ def create_training_job(body: dict[str, Any]) -> dict[str, Any]:
     loras.insert(0, lora)
     write_json(LORAS_PATH, loras)
 
-    task = create_task("LoRA训练准备", lora["name"], {"runId": run_id, "datasetId": dataset_id, "loraId": lora["id"], "configPath": lora["configPath"], "manifestPath": lora["manifestPath"], "datasetConfigPath": training_dataset["path"]})
-    task_patch = {"status": "等待GPU", "progress": 100, "output": {"loraId": lora["id"], "runDir": str(run_dir), "missingCaptionIds": manifest["missingCaptionIds"], "preparedImages": len(training_dataset["rows"]), "datasetConfigPath": training_dataset["path"]}}
-    update_task(task["id"], task_patch)
-    task = {**task, **task_patch}
+    task = start_training_run(run_id)
     return {"lora": lora, "run": config, "manifest": manifest, "task": task}
 
 
@@ -332,15 +348,8 @@ def start_training_run(run_id: str) -> dict[str, Any]:
     config_path = Path(str(lora.get("configPath") or ""))
     if not config_path.is_file():
         raise RuntimeError(f"训练配置不存在：{config_path}")
-    if not MUSUBI_PYTHON.is_file():
-        raise RuntimeError(f"musubi Python 不存在：{MUSUBI_PYTHON}")
-    if not MUSUBI_ACCELERATE.is_file():
-        raise RuntimeError(f"accelerate 不存在：{MUSUBI_ACCELERATE}")
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    required_paths = [Path(str(config.get("datasetConfigPath") or "")), QWEN_IMAGE_DIT, QWEN_IMAGE_VAE, QWEN_IMAGE_TEXT_ENCODER]
-    missing = [str(path) for path in required_paths if not path.exists()]
-    if missing:
-        raise RuntimeError(f"训练依赖不存在：{', '.join(missing)}")
+    validate_training_runtime([Path(str(config.get("datasetConfigPath") or ""))])
     task = create_task("LoRA训练", str(lora.get("name") or run_id), {"runId": run_id, "loraId": lora["id"], "configPath": str(config_path), "datasetConfigPath": str(config.get("datasetConfigPath"))})
     start_thread(training_worker, task, run_id, str(lora["id"]), config)
     return task
