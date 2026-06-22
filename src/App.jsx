@@ -70,7 +70,7 @@ function statusTag(status) {
   const colorMap = {
     可用: 'green', 可训练: 'green', 已标注: 'green', 完成: 'green', 镜像已就绪: 'green', 候选: 'blue', 运行中: 'processing',
     等待中: 'default', 等待GPU: 'blue', 等待GPU训练: 'blue', 等待GPU生成: 'blue', 训练中: 'processing', 下载中: 'processing', 整理中: 'orange', 待识别: 'orange', 待确认: 'blue', 未检查: 'orange', 未标注: 'orange', 未安装: 'orange', 未就绪: 'orange',
-    需复核: 'orange', 缺少标注: 'red', 缺失: 'red', 低质量: 'red', 失败: 'red', 归档: 'default',
+    需复核: 'orange', 缺少标注: 'red', 缺失: 'red', 低质量: 'red', 失败: 'red', 已取消: 'default', 归档: 'default',
   };
   return <Tag color={colorMap[status] || 'default'}>{status || '未知'}</Tag>;
 }
@@ -941,12 +941,19 @@ function ModelsPage() {
   return <PageContainer title="模型 / GPU" subTitle="检查本地 GPU、vLLM 镜像、Qwen Image 模型资产和训练工具状态。"><Row gutter={[16, 16]}><Col xs={24} lg={15}><ProCard title="模型与工具" extra={<Button loading={loading} onClick={loadStatus}>刷新</Button>}><List loading={loading} dataSource={assets} renderItem={(item) => <List.Item actions={[<Button key="check" loading={checking === item.id} onClick={() => checkAsset(item.id)}>检查</Button>]}><List.Item.Meta title={<Space wrap><Text strong>{item.name}</Text>{statusTag(item.status)}{item.required ? <Tag>必需</Tag> : null}</Space>} description={<Space direction="vertical" size={2}><Text>{item.path}</Text><Text type="secondary">{item.fileCount || 0} 个文件 / {item.size || '0 B'} / {item.kind}</Text></Space>} /></List.Item>} /></ProCard></Col><Col xs={24} lg={9}><div className="page-stack"><ProCard title="GPU"><Descriptions column={1} bordered size="small"><Descriptions.Item label="状态">{statusTag(gpu.status || '未知')}</Descriptions.Item>{(gpu.gpus || []).map((item, index) => <React.Fragment key={`${item.name}-${index}`}><Descriptions.Item label={`GPU ${index}`}>{item.name}</Descriptions.Item><Descriptions.Item label="显存">{item.memoryUsedMb} / {item.memoryTotalMb} MB</Descriptions.Item><Descriptions.Item label="驱动">{item.driverVersion}</Descriptions.Item><Descriptions.Item label="温度 / 利用率">{item.temperatureC} C / {item.utilizationPct}%</Descriptions.Item></React.Fragment>)}{gpu.message ? <Descriptions.Item label="信息">{gpu.message}</Descriptions.Item> : null}</Descriptions><Divider /><Button loading={checking === 'gpu'} onClick={() => checkAsset('gpu')}>检查 GPU</Button></ProCard><ProCard title="vLLM / Docker"><Descriptions column={1} bordered size="small"><Descriptions.Item label="Docker">{statusTag(docker.status || '未知')}</Descriptions.Item><Descriptions.Item label="版本">{docker.version || '-'}</Descriptions.Item><Descriptions.Item label="vLLM 镜像">{docker.vllmImage || '-'}</Descriptions.Item><Descriptions.Item label="镜像状态">{docker.imagePresent ? <Tag color="green">已拉取</Tag> : <Tag color="orange">未发现</Tag>}</Descriptions.Item><Descriptions.Item label="整体就绪">{summary.allReady ? <Tag color="green">是</Tag> : <Tag color="orange">否</Tag>}</Descriptions.Item></Descriptions><Divider /><Button loading={checking === 'vllm'} onClick={() => checkAsset('vllm')}>检查 vLLM</Button></ProCard></div></Col></Row></PageContainer>;
 }
 function TasksPage({ tasks, refresh }) {
+  const terminalStatuses = new Set(['完成', '失败', '已取消']);
   async function classify(task) {
     await api('/api/classifications', { method: 'POST', body: JSON.stringify({ datasetId: task.input.datasetId, sourceId: task.input.sourceId, sourceDir: task.input.sourceDir }) });
     message.success('已创建基础分类任务');
     refresh();
   }
-  return <PageContainer title="任务" subTitle="下载、抽帧、标注、训练和测试生成任务。"><ProCard extra={<Button onClick={refresh}>刷新</Button>}><ProTable search={false} options={false} toolBarRender={false} size="middle" rowKey="id" pagination={false} dataSource={tasks} columns={[{ title: '任务', dataIndex: 'type' }, { title: '目标', dataIndex: 'target' }, { title: '状态', dataIndex: 'status', render: statusTag }, { title: '进度', dataIndex: 'progress', render: (value) => <Progress percent={value || 0} size="small" /> }, { title: '操作', render: (_, row) => row.type === '抽帧' && row.status === '完成' ? <Button onClick={() => classify(row)}>基础分类</Button> : <Text type="secondary">-</Text> }]} /></ProCard></PageContainer>;
+  async function cancel(row) {
+    if (!window.confirm(`取消任务「${row.type}」？`)) return;
+    await api(`/api/tasks/${row.id}/cancel`, { method: 'POST' });
+    message.success('已请求取消任务');
+    refresh();
+  }
+  return <PageContainer title="任务" subTitle="下载、抽帧、标注、训练和测试生成任务。"><ProCard extra={<Button onClick={refresh}>刷新</Button>}><ProTable search={false} options={false} toolBarRender={false} size="middle" rowKey="id" pagination={false} dataSource={tasks} columns={[{ title: '任务', dataIndex: 'type' }, { title: '目标', dataIndex: 'target' }, { title: '状态', dataIndex: 'status', render: statusTag }, { title: '进度', dataIndex: 'progress', render: (value) => <Progress percent={value || 0} size="small" /> }, { title: '操作', render: (_, row) => <Space wrap>{row.type === '抽帧' && row.status === '完成' ? <Button onClick={() => classify(row)}>基础分类</Button> : null}{!terminalStatuses.has(row.status) ? <Button danger onClick={() => cancel(row)}>取消</Button> : null}{row.type !== '抽帧' || row.status !== '完成' ? null : null}{terminalStatuses.has(row.status) && !(row.type === '抽帧' && row.status === '完成') ? <Text type="secondary">-</Text> : null}</Space> }]} /></ProCard></PageContainer>;
 }
 
 function AppRoutes({ data }) {

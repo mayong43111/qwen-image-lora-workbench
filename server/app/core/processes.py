@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -12,23 +13,34 @@ resolved_ffmpeg_path: str | None = None
 resolved_aria2c_path: str | None = None
 
 
-def run_process(command: str, args: list[str], cwd: Path | None = None, extra_path: list[Path] | None = None) -> dict[str, Any]:
+def run_process(command: str, args: list[str], cwd: Path | None = None, extra_path: list[Path] | None = None, cancel_checker: Any | None = None) -> dict[str, Any]:
     try:
         env = os.environ.copy()
         if extra_path:
             path_value = env.get("PATH", "")
             env["PATH"] = os.pathsep.join([str(path) for path in extra_path]) + os.pathsep + path_value
-        result = subprocess.run(
+        child = subprocess.Popen(
             [command, *args],
             cwd=str(cwd) if cwd else None,
             env=env,
             text=True,
-            capture_output=True,
-            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             encoding="utf-8",
             errors="replace",
         )
-        return {"code": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
+        while child.poll() is None:
+            if cancel_checker and cancel_checker():
+                child.terminate()
+                try:
+                    stdout, stderr = child.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    stdout, stderr = child.communicate()
+                return {"code": -2, "stdout": stdout, "stderr": stderr, "cancelled": True}
+            time.sleep(0.2)
+        stdout, stderr = child.communicate()
+        return {"code": child.returncode, "stdout": stdout, "stderr": stderr}
     except FileNotFoundError:
         return {"code": -1, "stdout": "", "stderr": f"{command} 未安装或不在 PATH"}
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -9,6 +10,9 @@ from typing import Any
 from ..core.config import CLASSIFY_SCRIPT, DATA_ROOT, DATASETS_PATH, EXTRACT_SCRIPT, IMAGES_PATH, REPO_ROOT, TASKS_PATH, VIDEOS_PATH
 from ..core.processes import resolve_ffmpeg, run_process
 from ..core.storage import now_iso, read_json, safe_id, write_json
+
+RUNNING_PROCESSES: dict[str, subprocess.Popen[Any]] = {}
+TERMINAL_STATUSES = {"完成", "失败", "已取消"}
 
 
 def task_id() -> str:
@@ -22,6 +26,45 @@ def start_thread(target: Any, *args: Any) -> None:
 
 def list_tasks() -> list[dict[str, Any]]:
     return read_json(TASKS_PATH, [])
+
+
+def task_by_id(task_id_value: str) -> dict[str, Any] | None:
+    return next((task for task in list_tasks() if task.get("id") == task_id_value), None)
+
+
+def is_cancel_requested(task_id_value: str) -> bool:
+    task = task_by_id(task_id_value)
+    return bool(task and (task.get("cancelRequested") or task.get("status") == "已取消"))
+
+
+def mark_cancelled(task_id_value: str, message: str = "任务已取消") -> None:
+    append_task_log(task_id_value, message)
+    update_task(task_id_value, {"status": "已取消", "progress": 100, "cancelRequested": True, "cancelledAt": now_iso()})
+
+
+def register_task_process(task_id_value: str, child: subprocess.Popen[Any]) -> None:
+    RUNNING_PROCESSES[task_id_value] = child
+
+
+def unregister_task_process(task_id_value: str) -> None:
+    RUNNING_PROCESSES.pop(task_id_value, None)
+
+
+def cancel_task(task_id_value: str) -> dict[str, Any]:
+    tasks = read_json(TASKS_PATH, [])
+    index = next((i for i, task in enumerate(tasks) if task.get("id") == task_id_value), -1)
+    if index < 0:
+        raise RuntimeError(f"任务不存在：{task_id_value}")
+    task = tasks[index]
+    if task.get("status") in TERMINAL_STATUSES:
+        return task
+    log = [*(task.get("log") or []), "用户请求取消任务"]
+    tasks[index] = {**task, "cancelRequested": True, "status": "已取消", "progress": 100, "cancelledAt": now_iso(), "log": log[-120:], "updatedAt": now_iso()}
+    write_json(TASKS_PATH, tasks)
+    child = RUNNING_PROCESSES.get(task_id_value)
+    if child and child.poll() is None:
+        child.terminate()
+    return tasks[index]
 
 
 def create_task(kind: str, target: str, input_value: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -131,12 +174,14 @@ def extraction_worker(task: dict[str, Any], body: dict[str, Any], source_id: str
         args.extend(["--end-sec", str(body.get("endSec"))])
     update_task(task["id"], {"status": "运行中", "progress": 5, "log": [f"python {' '.join(args)}"]})
     ffmpeg_dir = Path(resolve_ffmpeg()).parent
-    result = run_process("python", args, cwd=REPO_ROOT, extra_path=[ffmpeg_dir])
+    result = run_process("python", args, cwd=REPO_ROOT, extra_path=[ffmpeg_dir], cancel_checker=lambda: is_cancel_requested(task["id"]))
     if result["stdout"].strip():
         append_task_log(task["id"], result["stdout"].strip(), 50)
     if result["stderr"].strip():
         append_task_log(task["id"], result["stderr"].strip())
-    if result["code"] == 0:
+    if result.get("cancelled") or is_cancel_requested(task["id"]):
+        mark_cancelled(task["id"])
+    elif result["code"] == 0:
         count = import_frames(str(body["datasetId"]), source_id, source_dir)
         update_task(task["id"], {"status": "完成", "progress": 100, "output": {"importedImages": count}})
     else:
@@ -168,12 +213,14 @@ def start_extraction(body: dict[str, Any]) -> dict[str, Any]:
 def classification_worker(task: dict[str, Any], body: dict[str, Any]) -> None:
     args = [str(CLASSIFY_SCRIPT), "--source-dir", str(body["sourceDir"]), "--copy-files", "--overwrite"]
     update_task(task["id"], {"status": "运行中", "progress": 10, "log": [f"python {' '.join(args)}"]})
-    result = run_process("python", args, cwd=REPO_ROOT)
+    result = run_process("python", args, cwd=REPO_ROOT, cancel_checker=lambda: is_cancel_requested(task["id"]))
     if result["stdout"].strip():
         append_task_log(task["id"], result["stdout"].strip(), 70)
     if result["stderr"].strip():
         append_task_log(task["id"], result["stderr"].strip())
-    if result["code"] == 0:
+    if result.get("cancelled") or is_cancel_requested(task["id"]):
+        mark_cancelled(task["id"])
+    elif result["code"] == 0:
         count = import_scores(str(body["datasetId"]), str(body["sourceId"]), Path(str(body["sourceDir"])))
         update_task(task["id"], {"status": "完成", "progress": 100, "output": {"updatedImages": count}})
     else:
@@ -200,7 +247,10 @@ def annotation_worker(task: dict[str, Any], dataset_id: str, body: dict[str, Any
     image_count = len(body.get("imageIds") or [])
     update_task(task["id"], {"status": "运行中", "progress": 5, "log": [f"开始智能体标注：{dataset_id}，图片 {image_count or '全部'} 张"]})
     try:
-        result = annotate_dataset_images(dataset_id, body)
+        result = annotate_dataset_images(dataset_id, body, should_cancel=lambda: is_cancel_requested(task["id"]))
+        if result.get("cancelled") or is_cancel_requested(task["id"]):
+            mark_cancelled(task["id"])
+            return
         failed = result.get("failed") or []
         updated = int(result.get("updated") or 0)
         if failed:

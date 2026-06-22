@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 
 from ..core.responses import fail, ok
-from ..services.task_service import list_tasks, start_classification, start_extraction
+from ..services.task_service import cancel_task, list_tasks, start_classification, start_extraction
 
 router = APIRouter(tags=["tasks"])
 
@@ -27,3 +27,11 @@ async def api_classifications(request: Request):
 @router.get("/api/tasks")
 def api_tasks():
     return ok({"tasks": list_tasks()})
+
+
+@router.post("/api/tasks/{task_id}/cancel")
+def api_cancel_task(task_id: str):
+    try:
+        return ok({"task": cancel_task(task_id)})
+    except RuntimeError as error:
+        return fail(str(error), 404)

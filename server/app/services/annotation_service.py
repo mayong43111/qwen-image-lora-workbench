@@ -178,7 +178,7 @@ def call_azure_openai(image_url: str, prompt: str, settings: dict[str, Any]) -> 
     return parsed
 
 
-def annotate_dataset_images(dataset_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+def annotate_dataset_images(dataset_id: str, body: dict[str, Any] | None = None, should_cancel: Any | None = None) -> dict[str, Any]:
     body = body or {}
     settings = get_annotation_settings()
     provider = body.get("provider") or settings.get("provider") or "cloud"
@@ -205,6 +205,8 @@ def annotate_dataset_images(dataset_id: str, body: dict[str, Any] | None = None)
     prompt = annotation_prompt(dataset)
 
     for row in rows:
+        if should_cancel and should_cancel():
+            return {"images": dataset_images_from(images, dataset_id), "updated": updated, "failed": failed, "results": results, "cancelled": True, "settings": {"provider": provider, "cloudDeployment": (settings.get("cloud") or {}).get("deployment")}}
         image_id = row.get("id")
         try:
             file_path = dataset_image_path(dataset_id, row)

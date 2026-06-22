@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse
 from ..core.config import DATA_ROOT, PROJECT_ROOT, VIDEOS_DIR, VIDEOS_PATH
 from ..core.processes import resolve_aria2c, resolve_ffmpeg, run_process
 from ..core.storage import now_iso, read_json, safe_file_name, unique_id, write_json
-from .task_service import append_task_log, create_task, start_thread, update_task
+from .task_service import append_task_log, create_task, is_cancel_requested, mark_cancelled, register_task_process, start_thread, unregister_task_process, update_task
 
 
 def parse_duration(value: Any) -> float:
@@ -338,6 +338,7 @@ def magnet_download_worker(task: dict[str, Any], video: dict[str, Any], url: str
         update_task(task["id"], {"status": "失败", "progress": 100, "error": f"下载工具启动失败：{error}"})
         patch_video(video["id"], {"status": "失败", "metadataError": f"下载工具启动失败：{error}"})
         return
+    register_task_process(task["id"], child)
 
     def read_output(stream: Any) -> None:
         last_progress = video.get("downloadProgress", 0)
@@ -362,9 +363,17 @@ def magnet_download_worker(task: dict[str, Any], video: dict[str, Any], url: str
             thread = threading.Thread(target=read_output, args=(stream,), daemon=True)
             thread.start()
             threads.append(thread)
-    code = child.wait()
-    for thread in threads:
-        thread.join(timeout=1)
+    try:
+        code = child.wait()
+        for thread in threads:
+            thread.join(timeout=1)
+    finally:
+        unregister_task_process(task["id"])
+
+    if is_cancel_requested(task["id"]):
+        mark_cancelled(task["id"])
+        patch_video(video["id"], {"status": "已取消", "downloadProgress": 100, "downloadSpeed": "", "metadataError": "下载任务已取消"})
+        return
 
     if code != 0:
         update_task(task["id"], {"status": "失败", "progress": 100, "error": f"下载工具退出码：{code}"})
@@ -407,6 +416,7 @@ def download_worker(task: dict[str, Any], video: dict[str, Any], url: str) -> No
         update_task(task["id"], {"status": "失败", "progress": 100, "error": f"下载工具启动失败：{error}"})
         patch_video(video["id"], {"status": "失败", "metadataError": f"下载工具启动失败：{error}"})
         return
+    register_task_process(task["id"], child)
 
     stdout_lines: list[str] = []
 
@@ -440,9 +450,17 @@ def download_worker(task: dict[str, Any], video: dict[str, Any], url: str) -> No
     stderr_thread = threading.Thread(target=read_stderr, daemon=True)
     stdout_thread.start()
     stderr_thread.start()
-    code = child.wait()
-    stdout_thread.join(timeout=1)
-    stderr_thread.join(timeout=1)
+    try:
+        code = child.wait()
+        stdout_thread.join(timeout=1)
+        stderr_thread.join(timeout=1)
+    finally:
+        unregister_task_process(task["id"])
+
+    if is_cancel_requested(task["id"]):
+        mark_cancelled(task["id"])
+        patch_video(video["id"], {"status": "已取消", "downloadProgress": 100, "downloadSpeed": "", "metadataError": "下载任务已取消"})
+        return
 
     if code != 0:
         update_task(task["id"], {"status": "失败", "progress": 100, "error": f"下载工具退出码：{code}"})
