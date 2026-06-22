@@ -24,6 +24,17 @@ CATEGORY_LABELS = {
 
 CLOUD_SETTING_KEYS = {"type", "endpoint", "deployment", "apiVersion", "apiKey"}
 LOCAL_SETTING_KEYS = {"type", "endpoint", "model"}
+POSE_DATASET_MARKERS = ("姿势", "人体", "pose", "素描", "速写", "解剖")
+GENERIC_POSE_PHRASES = (
+    "不同姿势",
+    "多种姿势",
+    "各种姿势",
+    "不同的手部动作",
+    "多种手部动作",
+    "包括跪姿",
+    "包括站立",
+    "包括坐姿",
+)
 
 
 def pick_settings(source: dict[str, Any], keys: set[str]) -> dict[str, Any]:
@@ -145,13 +156,57 @@ def annotation_prompt(dataset: dict[str, Any] | None = None) -> str:
   "view_angle": "正面 / 侧面 / 三分之二视角 / 远景 / 局部细节 / 未知",
     "quality_score": 0,
     "training_suggestion": "选中 | 低权重 | 仅作风格参考 | 剔除",
-    "caption_suggestion": "以 {trigger} 开头的中文 caption 建议，详细但精确描述主体、姿态动作、服饰外观、构图视角、场景物件、光线色彩和风格特征",
+    "caption_suggestion": "以 {trigger} 开头的中文 caption 建议，用两到四句详细但精确描述主体、具体姿态动作、身体体态、手臂和手部动作、腿部和脚部位置、构图视角、场景物件、光线色彩和风格特征",
   "tags": ["中文标签"],
     "reject_reasons": [],
   "warnings": []
 }}
 
-规则：caption 和质量分数都只是建议，不代表用户已经接受；不要自动剔除图片。quality_score 必须是 0-100 的整数。caption_suggestion 要写可复现的视觉信息，不要只写泛化短句，也不要编造图片中不可见的身份、情节、品牌或来源。"""
+规则：
+- caption 和质量分数都只是建议，不代表用户已经接受；不要自动剔除图片。
+- quality_score 必须是 0-100 的整数。
+- caption_suggestion 要写可复现的视觉信息，不要只写泛化短句，也不要编造图片中不可见的身份、情节、品牌或来源。
+- 如果图片是人物、人体姿势素材、速写、素描或解剖参考，caption_suggestion 必须具体描述姿势：站立/坐姿/跪姿/蹲姿/躺姿/前倾/后仰/扭转，躯干朝向和弯曲，头部朝向，肩膀和髋部角度，手臂抬起/弯曲/支撑/交叉/下垂，手掌或手指动作，双腿伸直/弯曲/交叉/跪地/踩地，重心落点和视角。
+- 如果同一张图包含多个人物或多幅姿势小图，必须按“左侧/中间/右侧/上方/下方/第一个/第二个”等位置逐个描述；不要只写“四幅不同姿势”“多种手部动作”这类概括。
+- 姿势素材的 caption_suggestion 至少 80 个汉字；如果有多幅姿势小图，每个可见姿势至少写一个独立分句，说明躯干、手臂/手部、腿部/脚部和重心。
+- 禁止只用“不同姿势”“多种姿势”“包括站立/坐姿/跪姿”等短语概括，除非后面继续逐个说明每个姿势的具体体态。
+- 对人体素描、解剖参考或未着衣人体，只做中性、学术的数据集描述，重点写姿势、体态、线稿/素描风格，不写挑逗、性感或主观评价。"""
+
+
+def normalize_caption_suggestion(caption: Any, trigger: str) -> str:
+    text = str(caption or "").strip()
+    if not text:
+        return ""
+    trigger = str(trigger or "").strip()
+    if trigger and not text.startswith(trigger):
+        text = f"{trigger}, {text}"
+    return text
+
+
+def is_pose_dataset(dataset: dict[str, Any] | None) -> bool:
+    haystack = " ".join(str((dataset or {}).get(key) or "") for key in ("name", "domain", "trigger")).lower()
+    return any(marker.lower() in haystack for marker in POSE_DATASET_MARKERS)
+
+
+def caption_needs_pose_retry(caption: str, dataset: dict[str, Any] | None) -> bool:
+    if not is_pose_dataset(dataset):
+        return False
+    text = re.sub(r"\s+", "", caption or "")
+    if len(text) < 80:
+        return True
+    return any(phrase in caption for phrase in GENERIC_POSE_PHRASES)
+
+
+def pose_retry_prompt(prompt: str, caption: str) -> str:
+    return f"""{prompt}
+
+上一版 caption_suggestion 不合格：{caption}
+
+请重新标注同一张图片。caption_suggestion 必须更适合姿势 LoRA 训练：
+- 至少 80 个汉字。
+- 如果有多幅姿势小图，按左侧/中间/右侧/上方/下方/第一个/第二个逐个描述。
+- 每个姿势都要写清：躯干朝向和弯曲、头部方向、手臂和手部动作、腿部和脚部位置、重心落点、画面视角。
+- 不要只写“不同姿势”“多种姿势”“包括站立/坐姿/跪姿”。"""
 
 
 def call_azure_openai(image_url: str, prompt: str, settings: dict[str, Any]) -> dict[str, Any]:
@@ -177,7 +232,7 @@ def call_azure_openai(image_url: str, prompt: str, settings: dict[str, Any]) -> 
             },
         ],
         "temperature": 0.0,
-        "max_tokens": 900,
+        "max_tokens": 1600,
     }
     request = urllib.request.Request(
         url,
@@ -221,7 +276,7 @@ def call_local_openai(image_url: str, prompt: str, settings: dict[str, Any]) -> 
             },
         ],
         "temperature": 0.0,
-        "max_tokens": 900,
+        "max_tokens": 1600,
     }
     request = urllib.request.Request(
         url,
@@ -275,6 +330,7 @@ def annotate_dataset_images(
     results: list[dict[str, Any]] = []
     datasets = read_json(DATASETS_PATH, [])
     dataset = next((item for item in datasets if item.get("id") == dataset_id), None)
+    trigger = (dataset or {}).get("trigger") or "custom_trigger"
     prompt = annotation_prompt(dataset)
 
     total = len(rows)
@@ -286,6 +342,11 @@ def annotate_dataset_images(
         try:
             file_path = dataset_image_path(dataset_id, row)
             parsed = call_local_openai(image_data_url(file_path), prompt, settings) if provider == "local" else call_azure_openai(image_data_url(file_path), prompt, settings)
+            caption_suggestion = normalize_caption_suggestion(parsed.get("caption_suggestion") or parsed.get("中文caption建议") or "", trigger)
+            if caption_needs_pose_retry(caption_suggestion, dataset):
+                retry_prompt = pose_retry_prompt(prompt, caption_suggestion)
+                parsed = call_local_openai(image_data_url(file_path), retry_prompt, settings) if provider == "local" else call_azure_openai(image_data_url(file_path), retry_prompt, settings)
+                caption_suggestion = normalize_caption_suggestion(parsed.get("caption_suggestion") or parsed.get("中文caption建议") or caption_suggestion, trigger)
             category = normalize_category(parsed.get("category") or parsed.get("category_label"))
             quality_score = parsed.get("quality_score") or parsed.get("质量分数") or parsed.get("qualityScore")
             try:
@@ -304,7 +365,7 @@ def annotate_dataset_images(
                 "viewAngle": parsed.get("view_angle") or parsed.get("视角") or "未知",
                 "qualityScore": quality_score,
                 "trainingSuggestion": parsed.get("training_suggestion") or parsed.get("训练建议") or "选中",
-                "captionSuggestion": parsed.get("caption_suggestion") or parsed.get("中文caption建议") or "",
+                "captionSuggestion": caption_suggestion,
                 "rejectReasons": parsed.get("reject_reasons") or parsed.get("剔除原因") or [],
                 "tags": parsed.get("tags") or [],
                 "warnings": parsed.get("warnings") or [],
