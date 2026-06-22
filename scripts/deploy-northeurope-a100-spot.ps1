@@ -80,7 +80,7 @@ write_files:
       #!/usr/bin/env bash
       set -euxo pipefail
       export DEBIAN_FRONTEND=noninteractive
-      export HF_HUB_ENABLE_HF_TRANSFER=1
+      export HF_XET_HIGH_PERFORMANCE=1
       export HF_HOME=/data/huggingface
       export HF_TOKEN='$HuggingFaceToken'
       WORKBENCH_REPO='$WorkbenchRepo'
@@ -112,16 +112,16 @@ write_files:
       docker pull "`${VLLM_IMAGE}"
 
       python3 -m pip install --upgrade pip
-      python3 -m pip install --upgrade 'huggingface_hub[cli]' hf_transfer
+      python3 -m pip install --upgrade 'huggingface_hub[cli]' hf_transfer yt-dlp
 
       download_model() {
         local repo="`$1"
         local target="`$2"
         mkdir -p "`$target"
         if [ -n "`${HF_TOKEN}" ]; then
-          huggingface-cli download "`$repo" --local-dir "`$target" --token "`$HF_TOKEN"
+          hf download "`$repo" --local-dir "`$target" --token "`$HF_TOKEN"
         else
-          huggingface-cli download "`$repo" --local-dir "`$target"
+          hf download "`$repo" --local-dir "`$target"
         fi
       }
 
@@ -141,6 +141,7 @@ write_files:
       if [ -f /opt/musubi-tuner/setup.py ] || [ -f /opt/musubi-tuner/pyproject.toml ]; then
         /opt/musubi-tuner/.venv/bin/pip install -e /opt/musubi-tuner
       fi
+      /opt/musubi-tuner/.venv/bin/pip install --upgrade --force-reinstall torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu121
 
       if [ ! -d /opt/qwen-image-lora-workbench/app/.git ]; then
         git clone --branch "`$WORKBENCH_BRANCH" "`$WORKBENCH_REPO" /opt/qwen-image-lora-workbench/app
@@ -186,7 +187,7 @@ write_files:
       [Service]
       Type=simple
       ExecStartPre=-/usr/bin/docker rm -f qwen-vllm-annotator
-      ExecStart=/usr/bin/docker run --rm --gpus all --network host --ipc=host --name qwen-vllm-annotator -v /data/models:/data/models --entrypoint vllm $VllmImage serve /data/models/qwen2.5-vl-7b-instruct --host 0.0.0.0 --port 8000 --trust-remote-code --served-model-name /data/models/qwen2.5-vl-7b-instruct --limit-mm-per-prompt image=1
+      ExecStart=/usr/bin/docker run --rm --gpus all --network host --ipc=host --name qwen-vllm-annotator -v /data/models:/data/models --entrypoint vllm $VllmImage serve /data/models/qwen2.5-vl-7b-instruct --host 0.0.0.0 --port 8000 --trust-remote-code --served-model-name /data/models/qwen2.5-vl-7b-instruct
       ExecStop=/usr/bin/docker stop qwen-vllm-annotator
       Restart=always
       RestartSec=10

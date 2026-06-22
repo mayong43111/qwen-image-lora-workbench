@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -10,7 +13,16 @@ from fastapi.responses import FileResponse
 from ..core.config import DATASETS_PATH, EVALUATIONS_PATH, EVALUATION_RUNS_DIR, IMAGES_PATH, LORAS_PATH, TRAINING_RUNS_DIR
 from ..core.storage import now_iso, read_json, safe_id, unique_id, write_json
 from .dataset_service import dataset_image_path, list_datasets
-from .task_service import create_task, update_task
+from .task_service import append_task_log, create_task, is_cancel_requested, mark_cancelled, register_task_process, start_thread, unregister_task_process, update_task
+
+
+MUSUBI_ROOT = Path(os.environ.get("MUSUBI_TUNER_ROOT", "/opt/musubi-tuner"))
+MUSUBI_PYTHON = Path(os.environ.get("MUSUBI_TUNER_PYTHON", str(MUSUBI_ROOT / ".venv" / "bin" / "python")))
+MUSUBI_ACCELERATE = Path(os.environ.get("MUSUBI_TUNER_ACCELERATE", str(MUSUBI_ROOT / ".venv" / "bin" / "accelerate")))
+QWEN_IMAGE_MODEL_ROOT = Path(os.environ.get("QWEN_IMAGE_MODEL_ROOT", "/data/models/qwen-image-2512-dit"))
+QWEN_IMAGE_DIT = Path(os.environ.get("QWEN_IMAGE_DIT", str(QWEN_IMAGE_MODEL_ROOT / "transformer" / "diffusion_pytorch_model-00001-of-00009.safetensors")))
+QWEN_IMAGE_VAE = Path(os.environ.get("QWEN_IMAGE_VAE", str(QWEN_IMAGE_MODEL_ROOT / "vae" / "diffusion_pytorch_model.safetensors")))
+QWEN_IMAGE_TEXT_ENCODER = Path(os.environ.get("QWEN_IMAGE_TEXT_ENCODER", str(QWEN_IMAGE_MODEL_ROOT / "text_encoder" / "model-00001-of-00004.safetensors")))
 
 
 def list_loras() -> list[dict[str, Any]]:
@@ -71,6 +83,54 @@ def create_training_manifest(dataset: dict[str, Any], images: list[dict[str, Any
     return {"path": str(manifest_path), "rows": len(rows), "missingCaptionIds": missing_caption}
 
 
+def toml_string(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def write_training_dataset_config(dataset: dict[str, Any], images: list[dict[str, Any]], run_dir: Path, resolution: int, batch_size: int) -> dict[str, Any]:
+    image_dir = run_dir / "prepared_images"
+    image_dir.mkdir(parents=True, exist_ok=True)
+    rows: list[dict[str, str]] = []
+    for index, image in enumerate(images):
+        caption = image_caption(image)
+        if not caption:
+            continue
+        source_path = dataset_image_path(str(dataset["id"]), image)
+        if not source_path.is_file():
+            continue
+        suffix = source_path.suffix.lower() or ".jpg"
+        image_name = f"{index:05d}_{safe_id(str(image.get('id') or index), 'img')}{suffix}"
+        target_path = image_dir / image_name
+        shutil.copy2(source_path, target_path)
+        caption_path = target_path.with_suffix(".txt")
+        caption_path.write_text(caption, encoding="utf-8")
+        rows.append({"imagePath": str(target_path), "captionPath": str(caption_path)})
+    if not rows:
+        raise RuntimeError("没有带 caption 的训练图片，请先完成标注或填写 caption")
+
+    dataset_config_path = run_dir / "dataset_config.toml"
+    dataset_config = "\n".join([
+        "[general]",
+        "caption_extension = \".txt\"",
+        "",
+        "[[datasets]]",
+        f"image_directory = {toml_string(image_dir)}",
+        "caption_extension = \".txt\"",
+        f"resolution = [{resolution}, {resolution}]",
+        f"batch_size = {batch_size}",
+        "enable_bucket = true",
+        "bucket_no_upscale = false",
+        f"cache_directory = {toml_string(run_dir / 'cache')}",
+        "",
+    ])
+    dataset_config_path.write_text(dataset_config, encoding="utf-8")
+    return {"path": str(dataset_config_path), "imageDir": str(image_dir), "rows": rows}
+
+
 def create_training_job(body: dict[str, Any]) -> dict[str, Any]:
     dataset_id = str(body.get("datasetId") or "")
     if not dataset_id:
@@ -85,6 +145,7 @@ def create_training_job(body: dict[str, Any]) -> dict[str, Any]:
     run_dir = TRAINING_RUNS_DIR / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     manifest = create_training_manifest(dataset, images, run_dir)
+    training_dataset = write_training_dataset_config(dataset, images, run_dir, int(body.get("resolution") or 1024), int(body.get("batchSize") or 1))
 
     config = {
         "runId": run_id,
@@ -100,8 +161,10 @@ def create_training_job(body: dict[str, Any]) -> dict[str, Any]:
         "seed": int(body.get("seed") or 42),
         "imageCount": len(images),
         "manifestPath": manifest["path"],
+        "datasetConfigPath": training_dataset["path"],
+        "preparedImageDir": training_dataset["imageDir"],
         "outputDir": str(run_dir / "output"),
-        "gpuCommand": body.get("gpuCommand") or "musubi-tuner training command will be filled on GPU VM",
+        "gpuCommand": body.get("gpuCommand") or "由 /api/training/jobs/{runId}/start 启动 musubi-tuner 训练",
         "createdAt": now_iso(),
     }
     (run_dir / "train_config.json").write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -119,21 +182,168 @@ def create_training_job(body: dict[str, Any]) -> dict[str, Any]:
         "runId": run_id,
         "runDir": str(run_dir),
         "configPath": str(run_dir / "train_config.json"),
+        "datasetConfigPath": training_dataset["path"],
         "manifestPath": manifest["path"],
         "outputDir": config["outputDir"],
         "imageCount": len(images),
         "missingCaptionCount": len(manifest["missingCaptionIds"]),
+        "preparedImageCount": len(training_dataset["rows"]),
         "createdAt": now_iso(),
         "updatedAt": now_iso(),
     }
     loras.insert(0, lora)
     write_json(LORAS_PATH, loras)
 
-    task = create_task("LoRA训练准备", lora["name"], {"runId": run_id, "datasetId": dataset_id, "loraId": lora["id"], "configPath": lora["configPath"], "manifestPath": lora["manifestPath"]})
-    task_patch = {"status": "等待GPU", "progress": 100, "output": {"loraId": lora["id"], "runDir": str(run_dir), "missingCaptionIds": manifest["missingCaptionIds"]}}
+    task = create_task("LoRA训练准备", lora["name"], {"runId": run_id, "datasetId": dataset_id, "loraId": lora["id"], "configPath": lora["configPath"], "manifestPath": lora["manifestPath"], "datasetConfigPath": training_dataset["path"]})
+    task_patch = {"status": "等待GPU", "progress": 100, "output": {"loraId": lora["id"], "runDir": str(run_dir), "missingCaptionIds": manifest["missingCaptionIds"], "preparedImages": len(training_dataset["rows"]), "datasetConfigPath": training_dataset["path"]}}
     update_task(task["id"], task_patch)
     task = {**task, **task_patch}
     return {"lora": lora, "run": config, "manifest": manifest, "task": task}
+
+
+def lora_by_run_id(run_id: str) -> dict[str, Any] | None:
+    return next((item for item in list_loras() if item.get("runId") == run_id), None)
+
+
+def build_training_commands(config: dict[str, Any]) -> list[dict[str, Any]]:
+    dataset_config = str(config.get("datasetConfigPath") or "")
+    output_dir = str(config.get("outputDir") or "")
+    output_name = safe_id(str(config.get("runId") or "qwen_image_lora"), "lora")
+    steps = str(int(config.get("steps") or 100))
+    rank = str(int(config.get("rank") or 16))
+    learning_rate = str(config.get("learningRate") or "1e-4")
+    seed = str(int(config.get("seed") or 42))
+    train_script = MUSUBI_ROOT / "qwen_image_train_network.py"
+    cache_latents_script = MUSUBI_ROOT / "qwen_image_cache_latents.py"
+    cache_text_script = MUSUBI_ROOT / "qwen_image_cache_text_encoder_outputs.py"
+    return [
+        {
+            "name": "缓存 latents",
+            "command": str(MUSUBI_PYTHON),
+            "args": [str(cache_latents_script), "--dataset_config", dataset_config, "--vae", str(QWEN_IMAGE_VAE), "--model_version", "original", "--batch_size", "1", "--skip_existing"],
+        },
+        {
+            "name": "缓存文本编码",
+            "command": str(MUSUBI_PYTHON),
+            "args": [str(cache_text_script), "--dataset_config", dataset_config, "--text_encoder", str(QWEN_IMAGE_TEXT_ENCODER), "--batch_size", "1", "--model_version", "original", "--skip_existing"],
+        },
+        {
+            "name": "训练 LoRA",
+            "command": str(MUSUBI_ACCELERATE),
+            "args": [
+                "launch", "--num_cpu_threads_per_process", "1", "--mixed_precision", "bf16", str(train_script),
+                "--dit", str(QWEN_IMAGE_DIT),
+                "--vae", str(QWEN_IMAGE_VAE),
+                "--text_encoder", str(QWEN_IMAGE_TEXT_ENCODER),
+                "--model_version", "original",
+                "--dataset_config", dataset_config,
+                "--sdpa", "--mixed_precision", "bf16",
+                "--timestep_sampling", "shift",
+                "--weighting_scheme", "none", "--discrete_flow_shift", "2.2",
+                "--optimizer_type", "adamw8bit", "--learning_rate", learning_rate, "--gradient_checkpointing",
+                "--max_data_loader_n_workers", "2", "--persistent_data_loader_workers",
+                "--network_module", "networks.lora_qwen_image",
+                "--network_dim", rank,
+                "--max_train_steps", steps,
+                "--save_every_n_steps", steps,
+                "--seed", seed,
+                "--output_dir", output_dir,
+                "--output_name", output_name,
+            ],
+        },
+    ]
+
+
+def update_lora_by_id(lora_id: str, patch: dict[str, Any]) -> None:
+    loras = list_loras()
+    index = next((i for i, item in enumerate(loras) if item.get("id") == lora_id), -1)
+    if index < 0:
+        return
+    loras[index] = {**loras[index], **patch, "updatedAt": now_iso()}
+    write_json(LORAS_PATH, loras)
+
+
+def run_logged_process(task_id_value: str, command: str, args: list[str], cwd: Path, env: dict[str, str]) -> int:
+    child = subprocess.Popen(
+        [command, *args],
+        cwd=str(cwd),
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+    )
+    register_task_process(task_id_value, child)
+    try:
+        assert child.stdout is not None
+        for line in child.stdout:
+            text = line.rstrip()
+            if text:
+                append_task_log(task_id_value, text)
+            if is_cancel_requested(task_id_value) and child.poll() is None:
+                child.terminate()
+        return child.wait()
+    finally:
+        unregister_task_process(task_id_value)
+
+
+def training_worker(task: dict[str, Any], run_id: str, lora_id: str, config: dict[str, Any]) -> None:
+    update_task(task["id"], {"status": "运行中", "progress": 1})
+    update_lora_by_id(lora_id, {"status": "训练中"})
+    output_dir = Path(str(config.get("outputDir")))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = output_dir.parent
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    commands = build_training_commands(config)
+    (run_dir / "musubi_commands.json").write_text(json.dumps(commands, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        for index, step in enumerate(commands, start=1):
+            if is_cancel_requested(task["id"]):
+                mark_cancelled(task["id"])
+                update_lora_by_id(lora_id, {"status": "已取消"})
+                return
+            append_task_log(task["id"], f"开始：{step['name']}\n{step['command']} {' '.join(step['args'])}")
+            update_task(task["id"], {"progress": min(95, (index - 1) * 30 + 5), "output": {"runId": run_id, "loraId": lora_id, "currentStep": step["name"]}})
+            code = run_logged_process(task["id"], str(step["command"]), list(step["args"]), MUSUBI_ROOT, env)
+            if is_cancel_requested(task["id"]):
+                mark_cancelled(task["id"])
+                update_lora_by_id(lora_id, {"status": "已取消"})
+                return
+            if code != 0:
+                update_task(task["id"], {"status": "失败", "progress": 100, "error": f"{step['name']} 退出码：{code}"})
+                update_lora_by_id(lora_id, {"status": "失败"})
+                return
+        candidates = sorted(output_dir.glob("*.safetensors"), key=lambda path: path.stat().st_mtime, reverse=True)
+        weight_path = str(candidates[0]) if candidates else ""
+        update_task(task["id"], {"status": "完成", "progress": 100, "output": {"runId": run_id, "loraId": lora_id, "outputDir": str(output_dir), "weightPath": weight_path}})
+        update_lora_by_id(lora_id, {"status": "可用" if weight_path else "训练完成", "weightPath": weight_path, "outputDir": str(output_dir)})
+    except Exception as error:
+        update_task(task["id"], {"status": "失败", "progress": 100, "error": str(error)})
+        update_lora_by_id(lora_id, {"status": "失败"})
+
+
+def start_training_run(run_id: str) -> dict[str, Any]:
+    lora = lora_by_run_id(run_id)
+    if not lora:
+        raise RuntimeError(f"训练运行不存在：{run_id}")
+    config_path = Path(str(lora.get("configPath") or ""))
+    if not config_path.is_file():
+        raise RuntimeError(f"训练配置不存在：{config_path}")
+    if not MUSUBI_PYTHON.is_file():
+        raise RuntimeError(f"musubi Python 不存在：{MUSUBI_PYTHON}")
+    if not MUSUBI_ACCELERATE.is_file():
+        raise RuntimeError(f"accelerate 不存在：{MUSUBI_ACCELERATE}")
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    required_paths = [Path(str(config.get("datasetConfigPath") or "")), QWEN_IMAGE_DIT, QWEN_IMAGE_VAE, QWEN_IMAGE_TEXT_ENCODER]
+    missing = [str(path) for path in required_paths if not path.exists()]
+    if missing:
+        raise RuntimeError(f"训练依赖不存在：{', '.join(missing)}")
+    task = create_task("LoRA训练", str(lora.get("name") or run_id), {"runId": run_id, "loraId": lora["id"], "configPath": str(config_path), "datasetConfigPath": str(config.get("datasetConfigPath"))})
+    start_thread(training_worker, task, run_id, str(lora["id"]), config)
+    return task
 
 
 def update_lora(lora_id: str, body: dict[str, Any]) -> dict[str, Any]:

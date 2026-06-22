@@ -4,9 +4,8 @@ from pathlib import Path
 
 SERVER_DIR = Path(__file__).resolve().parents[2]
 PROJECT_ROOT = SERVER_DIR.parent
-REPO_ROOT = PROJECT_ROOT.parent
 WORKBENCH_SCRIPTS_DIR = PROJECT_ROOT / "scripts"
-PIPELINE_SCRIPTS_DIR = REPO_ROOT / "qwen-image-style-dataset-pipeline" / "scripts"
+REPO_ROOT = PROJECT_ROOT
 DATA_ROOT = PROJECT_ROOT / "local-data"
 DATA_DIR = DATA_ROOT / "registry"
 DATASETS_PATH = DATA_DIR / "datasets.json"
@@ -19,8 +18,8 @@ PROMPT_PATH = DATA_DIR / "annotation-prompt.txt"
 ANNOTATION_SETTINGS_PATH = DATA_DIR / "annotation-settings.json"
 TRAINING_RUNS_DIR = DATA_ROOT / "training-runs"
 EVALUATION_RUNS_DIR = DATA_ROOT / "evaluation-runs"
-EXTRACT_SCRIPT = WORKBENCH_SCRIPTS_DIR / "extract_frames.py" if (WORKBENCH_SCRIPTS_DIR / "extract_frames.py").exists() else PIPELINE_SCRIPTS_DIR / "extract_frames.py"
-CLASSIFY_SCRIPT = WORKBENCH_SCRIPTS_DIR / "classify_frames.py" if (WORKBENCH_SCRIPTS_DIR / "classify_frames.py").exists() else PIPELINE_SCRIPTS_DIR / "classify_frames.py"
+EXTRACT_SCRIPT = WORKBENCH_SCRIPTS_DIR / "extract_frames.py"
+CLASSIFY_SCRIPT = WORKBENCH_SCRIPTS_DIR / "classify_frames.py"
 VIDEOS_DIR = DATA_ROOT / "videos"
 
 DEFAULT_PROMPT = """你是用于构建 Qwen Image LoRA 数据集的中文图片标注助手。
