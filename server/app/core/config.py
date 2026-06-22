@@ -62,7 +62,7 @@ DEFAULT_ANNOTATION_SETTINGS = {
   "local": {
     "type": "openai-compatible",
     "endpoint": "http://127.0.0.1:8000/v1",
-    "model": "Qwen/Qwen2.5-VL-7B-Instruct",
+    "model": "/data/models/qwen2.5-vl-7b-instruct",
   },
 }
 

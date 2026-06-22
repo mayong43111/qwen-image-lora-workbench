@@ -178,12 +178,55 @@ def call_azure_openai(image_url: str, prompt: str, settings: dict[str, Any]) -> 
     return parsed
 
 
+def call_local_openai(image_url: str, prompt: str, settings: dict[str, Any]) -> dict[str, Any]:
+    local = settings.get("local") or {}
+    endpoint = str(local.get("endpoint") or "").rstrip("/")
+    model = str(local.get("model") or "Qwen/Qwen2.5-VL-7B-Instruct")
+    if not endpoint:
+        raise RuntimeError("本地 vLLM endpoint 未配置")
+    url = f"{endpoint}/chat/completions"
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "你是严谨的图片数据集标注助手。必须只输出 JSON。"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ],
+            },
+        ],
+        "temperature": 0.0,
+        "max_tokens": 900,
+    }
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=180) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"本地 vLLM 调用失败：HTTP {error.code} {detail}") from error
+    except urllib.error.URLError as error:
+        raise RuntimeError(f"本地 vLLM 连接失败：{error.reason}") from error
+    content = payload["choices"][0]["message"]["content"]
+    parsed = extract_json_object(content)
+    parsed["_raw"] = content
+    parsed["_model"] = model
+    return parsed
+
+
 def annotate_dataset_images(dataset_id: str, body: dict[str, Any] | None = None, should_cancel: Any | None = None) -> dict[str, Any]:
     body = body or {}
     settings = get_annotation_settings()
     provider = body.get("provider") or settings.get("provider") or "cloud"
-    if provider != "cloud":
-        raise RuntimeError("当前仅实现 cloud 标注；local vLLM 设置已保留但尚未接入")
+    if provider not in {"cloud", "local"}:
+        raise RuntimeError(f"不支持的标注供应商：{provider}")
 
     image_ids = set(body.get("imageIds") or [])
     limit = int(body.get("limit") or 0)
@@ -206,11 +249,11 @@ def annotate_dataset_images(dataset_id: str, body: dict[str, Any] | None = None,
 
     for row in rows:
         if should_cancel and should_cancel():
-            return {"images": dataset_images_from(images, dataset_id), "updated": updated, "failed": failed, "results": results, "cancelled": True, "settings": {"provider": provider, "cloudDeployment": (settings.get("cloud") or {}).get("deployment")}}
+            return {"images": dataset_images_from(images, dataset_id), "updated": updated, "failed": failed, "results": results, "cancelled": True, "settings": {"provider": provider, "cloudDeployment": (settings.get("cloud") or {}).get("deployment"), "localModel": (settings.get("local") or {}).get("model"), "localEndpoint": (settings.get("local") or {}).get("endpoint")}}
         image_id = row.get("id")
         try:
             file_path = dataset_image_path(dataset_id, row)
-            parsed = call_azure_openai(image_data_url(file_path), prompt, settings)
+            parsed = call_local_openai(image_data_url(file_path), prompt, settings) if provider == "local" else call_azure_openai(image_data_url(file_path), prompt, settings)
             category = normalize_category(parsed.get("category") or parsed.get("category_label"))
             quality_score = parsed.get("quality_score") or parsed.get("质量分数") or parsed.get("qualityScore")
             try:
@@ -218,8 +261,8 @@ def annotate_dataset_images(dataset_id: str, body: dict[str, Any] | None = None,
             except (TypeError, ValueError):
                 quality_score = None
             annotation = {
-                "provider": "cloud",
-                "model": (settings.get("cloud") or {}).get("deployment") or parsed.get("_model"),
+                "provider": provider,
+                "model": ((settings.get("local") or {}).get("model") if provider == "local" else (settings.get("cloud") or {}).get("deployment")) or parsed.get("_model"),
                 "runAt": now_iso(),
                 "category": category,
                 "categoryLabel": CATEGORY_LABELS.get(category, "未知"),
@@ -252,4 +295,4 @@ def annotate_dataset_images(dataset_id: str, body: dict[str, Any] | None = None,
         except Exception as error:
             failed.append({"id": image_id, "error": str(error)})
     write_json(IMAGES_PATH, images)
-    return {"images": dataset_images_from(images, dataset_id), "updated": updated, "failed": failed, "results": results, "settings": {"provider": provider, "cloudDeployment": (settings.get("cloud") or {}).get("deployment")}}
+    return {"images": dataset_images_from(images, dataset_id), "updated": updated, "failed": failed, "results": results, "settings": {"provider": provider, "cloudDeployment": (settings.get("cloud") or {}).get("deployment"), "localModel": (settings.get("local") or {}).get("model"), "localEndpoint": (settings.get("local") or {}).get("endpoint")}}

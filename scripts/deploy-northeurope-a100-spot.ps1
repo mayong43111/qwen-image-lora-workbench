@@ -155,7 +155,45 @@ write_files:
       python3 -m venv .venv
       .venv/bin/python -m pip install --upgrade pip
       .venv/bin/pip install -r requirements.txt
+      mkdir -p local-data/registry
+      cat >local-data/registry/annotation-settings.json <<'JSON'
+      {
+        "provider": "local",
+        "cloud": {
+          "type": "azure-openai",
+          "resourceGroup": "rg-auto-gen-chat",
+          "accountName": "aif-auto-gen-chat",
+          "endpoint": "https://aif-auto-gen-chat.cognitiveservices.azure.com/",
+          "deployment": "gpt-4o",
+          "apiVersion": "2024-10-21",
+          "auth": "azure-cli-token"
+        },
+        "local": {
+          "type": "openai-compatible",
+          "endpoint": "http://127.0.0.1:8000/v1",
+          "model": "/data/models/qwen2.5-vl-7b-instruct"
+        }
+      }
+      JSON
       chown -R '$AdminUsername':'$AdminUsername' /opt/qwen-image-lora-workbench /data/models /data/huggingface /opt/musubi-tuner
+
+      cat >/etc/systemd/system/qwen-vllm-annotator.service <<'SERVICE'
+      [Unit]
+      Description=Qwen2.5-VL vLLM annotation server
+      After=docker.service network-online.target
+      Wants=docker.service network-online.target
+
+      [Service]
+      Type=simple
+      ExecStartPre=-/usr/bin/docker rm -f qwen-vllm-annotator
+      ExecStart=/usr/bin/docker run --rm --gpus all --network host --ipc=host --name qwen-vllm-annotator -v /data/models:/data/models --entrypoint vllm $VllmImage serve /data/models/qwen2.5-vl-7b-instruct --host 0.0.0.0 --port 8000 --trust-remote-code --served-model-name /data/models/qwen2.5-vl-7b-instruct --limit-mm-per-prompt image=1
+      ExecStop=/usr/bin/docker stop qwen-vllm-annotator
+      Restart=always
+      RestartSec=10
+
+      [Install]
+      WantedBy=multi-user.target
+      SERVICE
 
       cat >/etc/systemd/system/qwen-lora-api.service <<'SERVICE'
       [Unit]
@@ -197,7 +235,7 @@ write_files:
       SERVICE
 
       systemctl daemon-reload
-      systemctl enable --now qwen-lora-api.service qwen-lora-web.service
+      systemctl enable --now qwen-vllm-annotator.service qwen-lora-api.service qwen-lora-web.service
       nvidia-smi || true
       docker image inspect "`$VLLM_IMAGE" >/dev/null
 runcmd:
