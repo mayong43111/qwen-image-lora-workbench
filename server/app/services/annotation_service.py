@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import base64
+from io import BytesIO
 import json
 import re
 import urllib.error
 import urllib.request
 from typing import Any, Callable
+
+from PIL import Image
 
 from ..core.config import ANNOTATION_SETTINGS_PATH, DATASETS_PATH, DEFAULT_ANNOTATION_SETTINGS, IMAGES_PATH, PROMPT_PATH
 from ..core.storage import now_iso, read_json, write_json
@@ -128,8 +131,16 @@ def normalize_category(value: Any) -> str:
     return aliases.get(text, "unknown")
 
 
-def image_data_url(file_path) -> str:
-    content = file_path.read_bytes()
+def image_data_url(file_path, max_side: int | None = None) -> str:
+    if max_side:
+        with Image.open(file_path) as image:
+            image = image.convert("RGB")
+            image.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+            output = BytesIO()
+            image.save(output, format="JPEG", quality=92, optimize=True)
+            content = output.getvalue()
+    else:
+        content = file_path.read_bytes()
     encoded = base64.b64encode(content).decode("ascii")
     return f"data:image/jpeg;base64,{encoded}"
 
@@ -290,7 +301,7 @@ def call_local_openai(image_url: str, prompt: str, settings: dict[str, Any]) -> 
             },
         ],
         "temperature": 0.0,
-        "max_tokens": 1600,
+        "max_tokens": 2400,
     }
     request = urllib.request.Request(
         url,
@@ -355,11 +366,12 @@ def annotate_dataset_images(
         image_id = row.get("id")
         try:
             file_path = dataset_image_path(dataset_id, row)
-            parsed = call_local_openai(image_data_url(file_path), prompt, settings) if provider == "local" else call_azure_openai(image_data_url(file_path), prompt, settings)
+            image_url = image_data_url(file_path, max_side=1024 if provider == "local" else None)
+            parsed = call_local_openai(image_url, prompt, settings) if provider == "local" else call_azure_openai(image_url, prompt, settings)
             caption_suggestion = normalize_caption_suggestion(parsed.get("caption_suggestion") or parsed.get("中文caption建议") or "", trigger)
             if caption_needs_pose_retry(caption_suggestion, dataset):
                 retry_prompt = pose_retry_prompt(prompt, caption_suggestion)
-                parsed = call_local_openai(image_data_url(file_path), retry_prompt, settings) if provider == "local" else call_azure_openai(image_data_url(file_path), retry_prompt, settings)
+                parsed = call_local_openai(image_url, retry_prompt, settings) if provider == "local" else call_azure_openai(image_url, retry_prompt, settings)
                 caption_suggestion = normalize_caption_suggestion(parsed.get("caption_suggestion") or parsed.get("中文caption建议") or caption_suggestion, trigger)
             category = normalize_category(parsed.get("category") or parsed.get("category_label"))
             quality_score = parsed.get("quality_score") or parsed.get("质量分数") or parsed.get("qualityScore")
