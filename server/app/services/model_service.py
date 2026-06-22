@@ -5,6 +5,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from .runtime_service import control_vllm, vllm_runtime_status
+
 VLLM_IMAGE = "docker.io/vllm/vllm-openai:v0.23.0"
 
 MODEL_ASSETS = [
@@ -143,7 +145,7 @@ def model_runtime_status() -> dict[str, Any]:
         "assets": assets,
         "gpu": gpu,
         "docker": docker,
-        "vllm": vllm_status(),
+        "vllm": {**vllm_status(), "runtime": vllm_runtime_status()},
         "summary": {
             "assetCount": len(assets),
             "readyAssets": ready_assets,
@@ -163,3 +165,7 @@ def check_model_asset(asset_id: str) -> dict[str, Any]:
     if not asset:
         raise RuntimeError(f"未知模型资产：{asset_id}")
     return model_asset_status(asset)
+
+
+def control_vllm_service(action: str) -> dict[str, Any]:
+    return control_vllm(action)

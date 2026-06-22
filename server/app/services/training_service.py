@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from ..core.config import DATASETS_PATH, EVALUATIONS_PATH, EVALUATION_RUNS_DIR, IMAGES_PATH, LORAS_PATH, TRAINING_RUNS_DIR
 from ..core.storage import now_iso, read_json, safe_id, unique_id, write_json
 from .dataset_service import dataset_image_path, list_datasets
+from .runtime_service import control_vllm, stop_vllm_if_running
 from .task_service import append_task_log, create_task, is_cancel_requested, mark_cancelled, register_task_process, start_thread, unregister_task_process, update_task
 
 
@@ -308,6 +309,7 @@ def run_logged_process(task_id_value: str, command: str, args: list[str], cwd: P
 def training_worker(task: dict[str, Any], run_id: str, lora_id: str, config: dict[str, Any]) -> None:
     update_task(task["id"], {"status": "运行中", "progress": 1})
     update_lora_by_id(lora_id, {"status": "训练中"})
+    restore_vllm = False
     output_dir = Path(str(config.get("outputDir")))
     output_dir.mkdir(parents=True, exist_ok=True)
     run_dir = output_dir.parent
@@ -316,6 +318,9 @@ def training_worker(task: dict[str, Any], run_id: str, lora_id: str, config: dic
     commands = build_training_commands(config)
     (run_dir / "musubi_commands.json").write_text(json.dumps(commands, ensure_ascii=False, indent=2), encoding="utf-8")
     try:
+        restore_vllm = stop_vllm_if_running()
+        if restore_vllm:
+            append_task_log(task["id"], "训练前已自动停止本地 vLLM 标注服务以释放 GPU 显存")
         for index, step in enumerate(commands, start=1):
             if is_cancel_requested(task["id"]):
                 mark_cancelled(task["id"])
@@ -339,6 +344,13 @@ def training_worker(task: dict[str, Any], run_id: str, lora_id: str, config: dic
     except Exception as error:
         update_task(task["id"], {"status": "失败", "progress": 100, "error": str(error)})
         update_lora_by_id(lora_id, {"status": "失败"})
+    finally:
+        if restore_vllm:
+            try:
+                control_vllm("start", wait_ready=False)
+                append_task_log(task["id"], "训练任务结束后已自动启动本地 vLLM 标注服务")
+            except Exception as error:
+                append_task_log(task["id"], f"自动恢复本地 vLLM 失败：{error}")
 
 
 def start_training_run(run_id: str) -> dict[str, Any]:

@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from ..core.responses import fail, ok
-from ..services.model_service import check_model_asset, model_runtime_status
+from ..services.model_service import check_model_asset, control_vllm_service, model_runtime_status
 
 router = APIRouter(prefix="/api/models", tags=["models"])
 
@@ -19,3 +19,11 @@ def api_model_check(asset_id: str):
         return ok({"check": check_model_asset(asset_id)})
     except RuntimeError as error:
         return fail(str(error), 404)
+
+
+@router.post("/vllm/{action}")
+def api_control_vllm(action: str):
+    try:
+        return ok({"vllm": control_vllm_service(action)})
+    except RuntimeError as error:
+        return fail(str(error), 400)

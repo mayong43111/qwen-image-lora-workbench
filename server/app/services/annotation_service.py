@@ -12,6 +12,7 @@ from typing import Any
 from ..core.config import ANNOTATION_SETTINGS_PATH, DATASETS_PATH, DEFAULT_ANNOTATION_SETTINGS, IMAGES_PATH, PROMPT_PATH
 from ..core.storage import now_iso, read_json, write_json
 from .dataset_service import dataset_image_path, dataset_images_from, list_dataset_images
+from .runtime_service import ensure_vllm_running
 
 CATEGORY_LABELS = {
     "scene": "纯场景",
@@ -227,6 +228,8 @@ def annotate_dataset_images(dataset_id: str, body: dict[str, Any] | None = None,
     provider = body.get("provider") or settings.get("provider") or "cloud"
     if provider not in {"cloud", "local"}:
         raise RuntimeError(f"不支持的标注供应商：{provider}")
+    if provider == "local":
+        ensure_vllm_running(wait_ready=True)
 
     image_ids = set(body.get("imageIds") or [])
     limit = int(body.get("limit") or 0)
