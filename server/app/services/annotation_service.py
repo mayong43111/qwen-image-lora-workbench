@@ -37,6 +37,7 @@ GENERIC_POSE_PHRASES = (
 )
 ORDINAL_TERMS = ("第一", "第二", "第三", "第四", "第五", "第1", "第2", "第3", "第4", "第5")
 POSITION_TERMS = ("左", "右", "上", "下", "中间", "前排", "后排", "从左到右", "从上到下", "阅读顺序")
+REFERENCE_PAGE_TERMS = ("姿势参考页", "人体姿势参考页", "多格姿势", "姿势表", "参考页", "pose sheet")
 
 
 def pick_settings(source: dict[str, Any], keys: set[str]) -> dict[str, Any]:
@@ -158,7 +159,7 @@ def annotation_prompt(dataset: dict[str, Any] | None = None) -> str:
   "view_angle": "正面 / 侧面 / 三分之二视角 / 远景 / 局部细节 / 未知",
     "quality_score": 0,
     "training_suggestion": "选中 | 低权重 | 仅作风格参考 | 剔除",
-    "caption_suggestion": "以 {trigger} 开头的中文 caption 建议，用两到四句详细但精确描述主体、具体姿态动作、身体体态、手臂和手部动作、腿部和脚部位置、构图视角、场景物件、光线色彩和风格特征",
+    "caption_suggestion": "以 {trigger} 开头的中文 caption 建议，用两到四句详细但精确描述这张图作为姿势参考页/多格姿势表的版式、阅读顺序、每个姿势小图的位置、具体姿态动作、身体体态、手臂和手部动作、腿部和脚部位置、线稿或素描风格",
   "tags": ["中文标签"],
     "reject_reasons": [],
   "warnings": []
@@ -168,10 +169,11 @@ def annotation_prompt(dataset: dict[str, Any] | None = None) -> str:
 - caption 和质量分数都只是建议，不代表用户已经接受；不要自动剔除图片。
 - quality_score 必须是 0-100 的整数。
 - caption_suggestion 要写可复现的视觉信息，不要只写泛化短句，也不要编造图片中不可见的身份、情节、品牌或来源。
-- 如果图片是人物、人体姿势素材、速写、素描或解剖参考，caption_suggestion 必须具体描述姿势：站立/坐姿/跪姿/蹲姿/躺姿/前倾/后仰/扭转，躯干朝向和弯曲，头部朝向，肩膀和髋部角度，手臂抬起/弯曲/支撑/交叉/下垂，手掌或手指动作，双腿伸直/弯曲/交叉/跪地/踩地，重心落点和视角。
+- 本数据集按“训练姿势参考页 LoRA”处理：不要把多格图当作需要拆开的单人照片，也不要把多幅小图描述成多人合照；caption_suggestion 要明确写“人体姿势参考页”“多格姿势参考页”“姿势表”或类似表述，让模型学习参考页版式。
+- 如果图片是人物、人体姿势素材、速写、素描或解剖参考，caption_suggestion 必须同时描述页面/版式和具体姿势：纸张或白底、编号/页码/小图排列、线稿或素描风格、站立/坐姿/跪姿/蹲姿/躺姿/前倾/后仰/扭转，躯干朝向和弯曲，头部朝向，肩膀和髋部角度，手臂抬起/弯曲/支撑/交叉/下垂，手掌或手指动作，双腿伸直/弯曲/交叉/跪地/踩地，重心落点和视角。
 - 如果同一张图包含多个人物或多幅姿势小图，必须先说明阅读顺序，例如“按从左到右、从上到下阅读”。逐个描述时必须同时写序号和方位，例如“第 1 幅（左上）”“第 2 幅（上排中间）”“第 3 幅（右侧）”；不要只写“四幅不同姿势”“多种手部动作”这类概括，也不要只写“第一幅/第二幅”但不说明它在图中的位置。
-- 姿势素材的 caption_suggestion 至少 80 个汉字；如果有多幅姿势小图，每个可见姿势至少写一个独立分句，说明躯干、手臂/手部、腿部/脚部和重心。
-- 禁止只用“不同姿势”“多种姿势”“包括站立/坐姿/跪姿”等短语概括，除非后面继续逐个说明每个姿势的具体体态。
+- 姿势参考页 caption_suggestion 至少 90 个汉字；如果有多幅姿势小图，每个可见姿势至少写一个独立分句，说明小图位置、躯干、手臂/手部、腿部/脚部和重心。
+- 可以用“多幅不同姿势”作为总述，但后面必须继续逐个说明每个小图的具体体态和方位。
 - 对人体素描、解剖参考或未着衣人体，只做中性、学术的数据集描述，重点写姿势、体态、线稿/素描风格，不写挑逗、性感或主观评价。"""
 
 
@@ -194,13 +196,17 @@ def caption_needs_pose_retry(caption: str, dataset: dict[str, Any] | None) -> bo
     if not is_pose_dataset(dataset):
         return False
     text = re.sub(r"\s+", "", caption or "")
-    if len(text) < 80:
+    if len(text) < 90:
+        return True
+    has_reference_page = any(term.lower() in caption.lower() for term in REFERENCE_PAGE_TERMS)
+    if not has_reference_page:
         return True
     has_ordinal = any(term in caption for term in ORDINAL_TERMS)
     has_position = any(term in caption for term in POSITION_TERMS)
     if has_ordinal and not has_position:
         return True
-    return any(phrase in caption for phrase in GENERIC_POSE_PHRASES)
+    has_generic_phrase = any(phrase in caption for phrase in GENERIC_POSE_PHRASES)
+    return has_generic_phrase and not (has_ordinal and has_position)
 
 
 def pose_retry_prompt(prompt: str, caption: str) -> str:
@@ -208,11 +214,13 @@ def pose_retry_prompt(prompt: str, caption: str) -> str:
 
 上一版 caption_suggestion 不合格：{caption}
 
-请重新标注同一张图片。caption_suggestion 必须更适合姿势 LoRA 训练：
-- 至少 80 个汉字。
+请重新标注同一张图片。caption_suggestion 必须更适合“姿势参考页 LoRA”训练：
+- 至少 90 个汉字。
+- 必须明确写“人体姿势参考页”“多格姿势参考页”“姿势表”或类似表述，让模型学习参考页版式，而不是单人照片。
+- 描述页面/版式：白底或纸张、编号/页码、线稿或素描风格、小图排列方式。
 - 如果有多幅姿势小图，必须先说明阅读顺序，例如“按从左到右、从上到下阅读”。逐个描述时必须同时写序号和方位，例如“第 1 幅（左上）”“第 2 幅（上排中间）”“第 3 幅（右侧）”。
 - 每个姿势都要写清：躯干朝向和弯曲、头部方向、手臂和手部动作、腿部和脚部位置、重心落点、画面视角。
-- 不要只写“不同姿势”“多种姿势”“包括站立/坐姿/跪姿”，也不要只写“第一幅/第二幅”但不说明它在图中的位置。"""
+- 可以用“多幅不同姿势”作为总述，但后面必须继续逐个说明每个小图的具体体态和方位；不要只写“第一幅/第二幅”但不说明它在图中的位置。"""
 
 
 def call_azure_openai(image_url: str, prompt: str, settings: dict[str, Any]) -> dict[str, Any]:
