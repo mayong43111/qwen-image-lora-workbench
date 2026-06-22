@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 
 from ..core.responses import fail, ok
-from ..services.task_service import cancel_task, list_tasks, start_classification, start_extraction
+from ..services.task_service import cancel_task, list_tasks, resume_task, start_classification, start_extraction
 
 router = APIRouter(tags=["tasks"])
 
@@ -35,3 +35,11 @@ def api_cancel_task(task_id: str):
         return ok({"task": cancel_task(task_id)})
     except RuntimeError as error:
         return fail(str(error), 404)
+
+
+@router.post("/api/tasks/{task_id}/resume")
+def api_resume_task(task_id: str):
+    try:
+        return ok({"task": resume_task(task_id)})
+    except RuntimeError as error:
+        return fail(str(error), 400)

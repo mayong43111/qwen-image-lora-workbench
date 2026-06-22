@@ -69,7 +69,7 @@ function evaluationResultImageUrl(result) {
 function statusTag(status) {
   const colorMap = {
     可用: 'green', 可训练: 'green', 已标注: 'green', 完成: 'green', 镜像已就绪: 'green', 候选: 'blue', 运行中: 'processing',
-    等待中: 'default', 等待GPU: 'blue', 等待GPU训练: 'blue', 等待GPU生成: 'blue', 准备中: 'processing', 训练中: 'processing', 下载中: 'processing', 整理中: 'orange', 待识别: 'orange', 待确认: 'blue', 未检查: 'orange', 未标注: 'orange', 未安装: 'orange', 未就绪: 'orange',
+    等待中: 'default', 可恢复: 'orange', 等待GPU: 'blue', 等待GPU训练: 'blue', 等待GPU生成: 'blue', 准备中: 'processing', 训练中: 'processing', 下载中: 'processing', 整理中: 'orange', 待识别: 'orange', 待确认: 'blue', 未检查: 'orange', 未标注: 'orange', 未安装: 'orange', 未就绪: 'orange',
     需复核: 'orange', 缺少标注: 'red', 缺失: 'red', 低质量: 'red', 失败: 'red', 已取消: 'default', 归档: 'default',
   };
   return <Tag color={colorMap[status] || 'default'}>{status || '未知'}</Tag>;
@@ -871,9 +871,9 @@ function AnnotationPage() {
   const [settings, setSettings] = useState(null);
   useEffect(() => {
     api('/api/annotation-prompt').then((payload) => setPrompt(payload.prompt || '')).catch((error) => message.error(error.message));
-    api('/api/annotation-settings').then((payload) => { setSettings(payload.settings || {}); settingsForm.setFieldsValue(payload.settings || {}); }).catch((error) => message.error(error.message));
   }, [settingsForm]);
   async function savePrompt() { await api('/api/annotation-prompt', { method: 'PUT', body: JSON.stringify({ prompt }) }); message.success('提示词已保存到本地文件'); }
+  return <PageContainer title="标注" subTitle="编辑智能体标注提示词；模型供应商与运行时配置在模型 / GPU 页面管理。"><div className="page-stack"><ProCard title="标注提示词"><TextArea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={18} /><Divider /><Button type="primary" onClick={savePrompt}>保存提示词</Button></ProCard></div></PageContainer>;
   async function saveSettings(values) { const payload = await api('/api/annotation-settings', { method: 'PUT', body: JSON.stringify(values) }); setSettings(payload.settings || values); settingsForm.setFieldsValue(payload.settings || values); message.success('标注供应商配置已保存'); }
   const provider = settings?.provider || 'cloud';
   const cloud = settings?.cloud || {};
@@ -1023,15 +1023,38 @@ function ModelsPage() {
   const runtimePanel = <Row gutter={[16, 16]}><Col xs={24} lg={12}><ProCard title="GPU" extra={<Button loading={checking === 'gpu'} onClick={() => checkAsset('gpu')}>检查 GPU</Button>}><Descriptions column={1} bordered size="small"><Descriptions.Item label="状态">{statusTag(gpu.status || '未知')}</Descriptions.Item>{(gpu.gpus || []).map((item, index) => <React.Fragment key={`${item.name}-${index}`}><Descriptions.Item label={`GPU ${index}`}>{item.name}</Descriptions.Item><Descriptions.Item label="显存">{item.memoryUsedMb} / {item.memoryTotalMb} MB</Descriptions.Item><Descriptions.Item label="驱动">{item.driverVersion}</Descriptions.Item><Descriptions.Item label="温度 / 利用率">{item.temperatureC} C / {item.utilizationPct}%</Descriptions.Item></React.Fragment>)}{gpu.message ? <Descriptions.Item label="信息">{gpu.message}</Descriptions.Item> : null}</Descriptions></ProCard></Col><Col xs={24} lg={12}><ProCard title="vLLM / Docker" extra={<Button loading={checking === 'vllm'} onClick={() => checkAsset('vllm')}>检查 vLLM</Button>}><Descriptions column={1} bordered size="small"><Descriptions.Item label="Docker">{statusTag(docker.status || '未知')}</Descriptions.Item><Descriptions.Item label="版本">{docker.version || '-'}</Descriptions.Item><Descriptions.Item label="vLLM 镜像">{docker.vllmImage || '-'}</Descriptions.Item><Descriptions.Item label="镜像状态">{docker.imagePresent ? <Tag color="green">已拉取</Tag> : <Tag color="orange">未发现</Tag>}</Descriptions.Item><Descriptions.Item label="服务状态">{statusTag(vllmRuntime.status || '未知')}</Descriptions.Item><Descriptions.Item label="整体就绪">{summary.allReady ? <Tag color="green">是</Tag> : <Tag color="orange">否</Tag>}</Descriptions.Item></Descriptions></ProCard></Col></Row>;
   return <PageContainer title="模型 / GPU" subTitle="标注模型、GPU 运行状态和模型资产分区管理。"><Tabs defaultActiveKey="annotation" items={[{ key: 'annotation', label: '标注模型', children: <AnnotationRuntimeCard /> }, { key: 'runtime', label: 'GPU / vLLM', children: runtimePanel }, { key: 'assets', label: '模型资产', children: assetPanel }]} /></PageContainer>;
 }
+function TaskJsonBlock({ value, empty = '无' }) {
+  if (value === undefined || value === null || value === '' || (Array.isArray(value) && !value.length)) return <Text type="secondary">{empty}</Text>;
+  return <pre style={{ margin: 0, maxHeight: 260, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: '#fafafa', border: '1px solid #f0f0f0', borderRadius: 6, padding: 12 }}>{typeof value === 'string' ? value : JSON.stringify(value, null, 2)}</pre>;
+}
+
+function TaskDetail({ task }) {
+  const logs = task.log || [];
+  return <div className="page-stack"><Descriptions bordered size="small" column={{ xs: 1, md: 2 }}><Descriptions.Item label="任务 ID">{task.id}</Descriptions.Item><Descriptions.Item label="类型">{task.type}</Descriptions.Item><Descriptions.Item label="目标" span={2}>{task.target || '-'}</Descriptions.Item><Descriptions.Item label="状态">{statusTag(task.status)}</Descriptions.Item><Descriptions.Item label="进度"><Progress percent={task.progress || 0} size="small" /></Descriptions.Item><Descriptions.Item label="创建时间">{task.createdAt || '-'}</Descriptions.Item><Descriptions.Item label="更新时间">{task.updatedAt || '-'}</Descriptions.Item><Descriptions.Item label="取消时间">{task.cancelledAt || '-'}</Descriptions.Item><Descriptions.Item label="错误">{task.error ? <Text type="danger">{task.error}</Text> : <Text type="secondary">无</Text>}</Descriptions.Item></Descriptions><Row gutter={[16, 16]}><Col xs={24} lg={12}><ProCard title="输入" size="small"><TaskJsonBlock value={task.input} /></ProCard></Col><Col xs={24} lg={12}><ProCard title="输出" size="small"><TaskJsonBlock value={task.output} /></ProCard></Col></Row><ProCard title={`日志 ${logs.length} 条`} size="small"><TaskJsonBlock value={logs.join('\n')} empty="暂无日志" /></ProCard></div>;
+}
+
 function TasksPage({ tasks, refresh }) {
   const terminalStatuses = new Set(['完成', '失败', '已取消']);
+  const [resumingId, setResumingId] = useState('');
   async function cancel(row) {
     if (!window.confirm(`取消任务「${row.type}」？`)) return;
     await api(`/api/tasks/${row.id}/cancel`, { method: 'POST' });
     message.success('已请求取消任务');
     refresh();
   }
-  return <PageContainer title="任务" subTitle="下载、抽帧、标注、训练和测试生成任务。"><ProCard extra={<Button onClick={refresh}>刷新</Button>}><ProTable search={false} options={false} toolBarRender={false} size="middle" rowKey="id" pagination={false} dataSource={tasks} columns={[{ title: '任务', dataIndex: 'type' }, { title: '目标', dataIndex: 'target' }, { title: '状态', dataIndex: 'status', render: statusTag }, { title: '进度', dataIndex: 'progress', render: (value) => <Progress percent={value || 0} size="small" /> }, { title: '操作', render: (_, row) => !terminalStatuses.has(row.status) ? <Button danger onClick={() => cancel(row)}>取消</Button> : <Text type="secondary">-</Text> }]} /></ProCard></PageContainer>;
+  async function resume(row) {
+    setResumingId(row.id);
+    try {
+      await api(`/api/tasks/${row.id}/resume`, { method: 'POST' });
+      message.success('任务已恢复');
+      refresh();
+    } catch (error) {
+      message.error(`恢复失败：${error.message}`);
+    } finally {
+      setResumingId('');
+    }
+  }
+  return <PageContainer title="任务" subTitle="下载、抽帧、标注、训练和测试生成任务。"><ProCard extra={<Button onClick={refresh}>刷新</Button>}><ProTable search={false} options={false} toolBarRender={false} size="middle" rowKey="id" pagination={{ pageSize: 12 }} tableLayout="fixed" scroll={{ x: 1080 }} expandable={{ expandedRowRender: (row) => <TaskDetail task={row} />, rowExpandable: () => true }} dataSource={tasks} columns={[{ title: '任务', dataIndex: 'type', width: 130 }, { title: '目标', dataIndex: 'target', ellipsis: true }, { title: '状态', dataIndex: 'status', width: 110, render: statusTag }, { title: '进度', dataIndex: 'progress', width: 180, render: (value) => <Progress percent={value || 0} size="small" /> }, { title: '更新时间', dataIndex: 'updatedAt', width: 190 }, { title: '操作', width: 160, render: (_, row) => row.status === '可恢复' ? <Space><Button type="primary" loading={resumingId === row.id} onClick={() => resume(row)}>恢复</Button><Button danger onClick={() => cancel(row)}>取消</Button></Space> : !terminalStatuses.has(row.status) ? <Button danger onClick={() => cancel(row)}>取消</Button> : <Text type="secondary">-</Text> }]} /></ProCard></PageContainer>;
 }
 
 function AppRoutes({ data }) {

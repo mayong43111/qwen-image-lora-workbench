@@ -13,6 +13,8 @@ from ..core.storage import now_iso, read_json, safe_id, write_json
 
 RUNNING_PROCESSES: dict[str, subprocess.Popen[Any]] = {}
 TERMINAL_STATUSES = {"完成", "失败", "已取消"}
+RECOVERABLE_STATUSES = {"等待中", "运行中"}
+RECOVERABLE_TYPES = {"智能体标注", "LoRA训练"}
 
 
 def task_id() -> str:
@@ -26,6 +28,26 @@ def start_thread(target: Any, *args: Any) -> None:
 
 def list_tasks() -> list[dict[str, Any]]:
     return read_json(TASKS_PATH, [])
+
+
+def mark_interrupted_tasks_recoverable() -> None:
+    tasks = read_json(TASKS_PATH, [])
+    changed = False
+    for index, task in enumerate(tasks):
+        if task.get("type") not in RECOVERABLE_TYPES or task.get("status") not in RECOVERABLE_STATUSES:
+            continue
+        log = [*(task.get("log") or []), "服务启动时检测到任务中断，可点击恢复继续"]
+        tasks[index] = {
+            **task,
+            "status": "可恢复",
+            "recoverable": True,
+            "interruptedAt": now_iso(),
+            "log": log[-120:],
+            "updatedAt": now_iso(),
+        }
+        changed = True
+    if changed:
+        write_json(TASKS_PATH, tasks)
 
 
 def task_by_id(task_id_value: str) -> dict[str, Any] | None:
@@ -65,6 +87,47 @@ def cancel_task(task_id_value: str) -> dict[str, Any]:
     if child and child.poll() is None:
         child.terminate()
     return tasks[index]
+
+
+def prepare_task_for_resume(task_id_value: str) -> dict[str, Any]:
+    tasks = read_json(TASKS_PATH, [])
+    index = next((i for i, task in enumerate(tasks) if task.get("id") == task_id_value), -1)
+    if index < 0:
+        raise RuntimeError(f"任务不存在：{task_id_value}")
+    task = tasks[index]
+    if task.get("type") not in RECOVERABLE_TYPES:
+        raise RuntimeError(f"任务类型不支持恢复：{task.get('type')}")
+    if task.get("status") != "可恢复":
+        raise RuntimeError(f"当前任务状态不能恢复：{task.get('status')}")
+    log = [*(task.get("log") or []), "用户请求恢复任务"]
+    resumed = {
+        **task,
+        "status": "等待中",
+        "recoverable": False,
+        "cancelRequested": False,
+        "resumedAt": now_iso(),
+        "log": log[-120:],
+        "updatedAt": now_iso(),
+    }
+    tasks[index] = resumed
+    write_json(TASKS_PATH, tasks)
+    return resumed
+
+
+def resume_task(task_id_value: str) -> dict[str, Any]:
+    task = prepare_task_for_resume(task_id_value)
+    if task.get("type") == "智能体标注":
+        body = dict(task.get("input") or {})
+        dataset_id = str(body.pop("datasetId", ""))
+        body["resume"] = True
+        body["skipAnnotated"] = True
+        start_thread(annotation_worker, task, dataset_id, body)
+        return task
+    if task.get("type") == "LoRA训练":
+        from .training_service import resume_training_task
+
+        return resume_training_task(task)
+    raise RuntimeError(f"任务类型不支持恢复：{task.get('type')}")
 
 
 def create_task(kind: str, target: str, input_value: dict[str, Any] | None = None) -> dict[str, Any]:

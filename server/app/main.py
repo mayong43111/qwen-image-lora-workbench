@@ -9,6 +9,7 @@ from .core.config import DATA_ROOT
 from .core.responses import exception_handler
 from .core.storage import ensure_data
 from .routers import annotation, datasets, models, summary, tasks, training, videos
+from .services.task_service import mark_interrupted_tasks_recoverable
 
 
 def create_app() -> FastAPI:
@@ -33,6 +34,7 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     def on_startup() -> None:
         ensure_data()
+        mark_interrupted_tasks_recoverable()
         print("Local FastAPI listening on http://127.0.0.1:8787")
         print(f"Data root: {DATA_ROOT}")
 

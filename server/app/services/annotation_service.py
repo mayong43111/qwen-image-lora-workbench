@@ -339,10 +339,13 @@ def annotate_dataset_images(
         ensure_vllm_running(wait_ready=True)
 
     image_ids = set(body.get("imageIds") or [])
+    skip_annotated = bool(body.get("skipAnnotated") or body.get("resume"))
     limit = int(body.get("limit") or 0)
     rows = list_dataset_images(dataset_id)
     if image_ids:
         rows = [image for image in rows if image.get("id") in image_ids]
+    if skip_annotated:
+        rows = [image for image in rows if image.get("annotation") != "已标注" or not str(image.get("caption") or "").strip()]
     if limit > 0:
         rows = rows[:limit]
     if not rows:

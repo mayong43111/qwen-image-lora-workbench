@@ -222,17 +222,50 @@ def lora_by_run_id(run_id: str) -> dict[str, Any] | None:
     return next((item for item in list_loras() if item.get("runId") == run_id), None)
 
 
+def latest_resume_state(output_dir: Path) -> str:
+    if not output_dir.is_dir():
+        return ""
+    candidates = [path for path in output_dir.glob("**/*") if path.is_dir() and "state" in path.name.lower()]
+    candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    return str(candidates[0]) if candidates else ""
+
+
 def build_training_commands(config: dict[str, Any]) -> list[dict[str, Any]]:
     dataset_config = str(config.get("datasetConfigPath") or "")
     output_dir = str(config.get("outputDir") or "")
     output_name = safe_id(str(config.get("runId") or "qwen_image_lora"), "lora")
     steps = str(int(config.get("steps") or 100))
+    save_every_n_steps = str(max(1, int(config.get("saveEveryNSteps") or min(100, max(1, int(config.get("steps") or 100))))))
     rank = str(int(config.get("rank") or 16))
     learning_rate = str(config.get("learningRate") or "1e-4")
     seed = str(int(config.get("seed") or 42))
+    resume_from_state = str(config.get("resumeFromState") or "")
     train_script = MUSUBI_ROOT / "qwen_image_train_network.py"
     cache_latents_script = MUSUBI_ROOT / "qwen_image_cache_latents.py"
     cache_text_script = MUSUBI_ROOT / "qwen_image_cache_text_encoder_outputs.py"
+    train_args = [
+        "launch", "--num_cpu_threads_per_process", "1", "--mixed_precision", "bf16", str(train_script),
+        "--dit", str(QWEN_IMAGE_DIT),
+        "--vae", str(QWEN_IMAGE_VAE),
+        "--text_encoder", str(QWEN_IMAGE_TEXT_ENCODER),
+        "--model_version", "original",
+        "--dataset_config", dataset_config,
+        "--sdpa", "--mixed_precision", "bf16",
+        "--timestep_sampling", "shift",
+        "--weighting_scheme", "none", "--discrete_flow_shift", "2.2",
+        "--optimizer_type", "adamw8bit", "--learning_rate", learning_rate, "--gradient_checkpointing",
+        "--max_data_loader_n_workers", "2", "--persistent_data_loader_workers",
+        "--network_module", "networks.lora_qwen_image",
+        "--network_dim", rank,
+        "--max_train_steps", steps,
+        "--save_every_n_steps", save_every_n_steps,
+        "--save_state",
+        "--seed", seed,
+        "--output_dir", output_dir,
+        "--output_name", output_name,
+    ]
+    if resume_from_state:
+        train_args.extend(["--resume", resume_from_state])
     return [
         {
             "name": "缓存 latents",
@@ -247,26 +280,7 @@ def build_training_commands(config: dict[str, Any]) -> list[dict[str, Any]]:
         {
             "name": "训练 LoRA",
             "command": str(MUSUBI_ACCELERATE),
-            "args": [
-                "launch", "--num_cpu_threads_per_process", "1", "--mixed_precision", "bf16", str(train_script),
-                "--dit", str(QWEN_IMAGE_DIT),
-                "--vae", str(QWEN_IMAGE_VAE),
-                "--text_encoder", str(QWEN_IMAGE_TEXT_ENCODER),
-                "--model_version", "original",
-                "--dataset_config", dataset_config,
-                "--sdpa", "--mixed_precision", "bf16",
-                "--timestep_sampling", "shift",
-                "--weighting_scheme", "none", "--discrete_flow_shift", "2.2",
-                "--optimizer_type", "adamw8bit", "--learning_rate", learning_rate, "--gradient_checkpointing",
-                "--max_data_loader_n_workers", "2", "--persistent_data_loader_workers",
-                "--network_module", "networks.lora_qwen_image",
-                "--network_dim", rank,
-                "--max_train_steps", steps,
-                "--save_every_n_steps", steps,
-                "--seed", seed,
-                "--output_dir", output_dir,
-                "--output_name", output_name,
-            ],
+            "args": train_args,
         },
     ]
 
@@ -315,6 +329,10 @@ def training_worker(task: dict[str, Any], run_id: str, lora_id: str, config: dic
     run_dir = output_dir.parent
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
+    resume_from_state = latest_resume_state(output_dir)
+    if resume_from_state:
+        config = {**config, "resumeFromState": resume_from_state}
+        append_task_log(task["id"], f"检测到训练 state，恢复来源：{resume_from_state}")
     commands = build_training_commands(config)
     (run_dir / "musubi_commands.json").write_text(json.dumps(commands, ensure_ascii=False, indent=2), encoding="utf-8")
     try:
@@ -364,6 +382,23 @@ def start_training_run(run_id: str) -> dict[str, Any]:
     validate_training_runtime([Path(str(config.get("datasetConfigPath") or ""))])
     task = create_task("LoRA训练", str(lora.get("name") or run_id), {"runId": run_id, "loraId": lora["id"], "configPath": str(config_path), "datasetConfigPath": str(config.get("datasetConfigPath"))})
     start_thread(training_worker, task, run_id, str(lora["id"]), config)
+    return task
+
+
+def resume_training_task(task: dict[str, Any]) -> dict[str, Any]:
+    run_id = str((task.get("input") or {}).get("runId") or "")
+    lora_id = str((task.get("input") or {}).get("loraId") or "")
+    if not run_id or not lora_id:
+        raise RuntimeError("训练任务缺少 runId 或 loraId，无法恢复")
+    lora = lora_by_run_id(run_id)
+    if not lora:
+        raise RuntimeError(f"训练运行不存在：{run_id}")
+    config_path = Path(str(lora.get("configPath") or (task.get("input") or {}).get("configPath") or ""))
+    if not config_path.is_file():
+        raise RuntimeError(f"训练配置不存在：{config_path}")
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    validate_training_runtime([Path(str(config.get("datasetConfigPath") or ""))])
+    start_thread(training_worker, task, run_id, lora_id, config)
     return task
 
 
