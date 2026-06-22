@@ -1,43 +1,158 @@
-# Qwen Image LoRA Workbench V2 UI
+# Qwen Image LoRA Workbench
 
-这是 V2 的本地前端实现目录。当前阶段使用 Vite + React + Ant Design + ProComponents 搭建 Ant Design Pro 风格骨架，不连接远程服务器，也不会触发 GPU 训练或 VLM 标注。
+Qwen Image LoRA Workbench is a local-first dataset preparation and training operations UI for building Qwen Image LoRA datasets. It helps you collect video frames or images, run objective local screening, ask an annotation agent for captions and semantic labels, review final training captions, prepare LoRA training manifests, and track test generation requests.
 
-## 目录
+The project is designed for a workstation or GPU VM workflow: prepare and review data locally, then move the generated manifests and run records to a GPU machine for training and evaluation.
+
+## Features
+
+- Dataset registry with trigger tokens, image counts, training selection, and caption status.
+- Video import, local path import, download task creation, ffmpeg probing, and frame extraction.
+- Manual image upload into a dataset.
+- Local image screening for objective validity checks such as near-black frames, white frames, and low-information blur.
+- Agent annotation through a configurable prompt, currently supporting Azure OpenAI GPT-4o via Azure CLI token auth.
+- Caption review workflow with original suggestion and editable final training caption kept separate.
+- Tags, category, quality score, annotation status, and training selection filters.
+- LoRA training preparation that writes a manifest and training config under `local-data/training-runs/`.
+- LoRA version registry with status, recommended strength, and weight path management.
+- Evaluation request registry with prompt settings, per-seed result slots, result image import, and result image serving.
+- Model and GPU status page backed by local API checks for NVIDIA GPU, Docker/vLLM, model directories, and musubi-tuner.
+
+## Tech Stack
+
+- Frontend: Vite, React 18, Ant Design 5, Ant Design Pro Components, React Router.
+- Backend: FastAPI, Uvicorn, Pillow, local JSON registry files.
+- Runtime tools: ffmpeg for probing/extraction, optional yt-dlp/aria2 for downloads, Azure CLI for cloud annotation auth.
+
+## Repository Layout
 
 ```text
 qwen-image-lora-workbench/
+  docs/                     Product and UI design notes
+  scripts/                  Deployment and operations scripts
+  server/app/               FastAPI application
+    core/                   Config, storage, process helpers, responses
+    routers/                API routes
+    services/               Dataset, video, task, annotation, training, model services
+  src/                      React application
   index.html
   package.json
   requirements.txt
   vite.config.js
-  server/
-    app/
-      core/
-      routers/
-      services/
-      main.py
-    local_api.py
-  src/
-    main.jsx
-    App.jsx
-    styles.css
-  docs/
-    PRODUCT_DESIGN_V2.md
-    WEB_UI_DESIGN_V2.md
 ```
 
-## 本地运行
+## Quick Start
 
-首次运行先安装依赖：
+Install Node and Python dependencies:
 
 ```powershell
 npm install
 python -m pip install -r requirements.txt
 ```
 
-本地 API 使用 Python + FastAPI，默认监听 `http://127.0.0.1:8787`。视频导入识别只调用本机 `ffmpeg -i` 并解析输出。必须确保 `ffmpeg` 在 VS Code 启动环境的 `PATH` 中。普通链接下载需要额外安装 `yt-dlp`；磁力链接解析和下载需要安装 `aria2`，或设置 `ARIA2C_PATH` 指向 `aria2c`。
+Start the local API and Vite dev server:
 
-后端按模块拆分：`core/` 放路径、存储、进程工具和统一响应；`services/` 放数据集、视频、任务等业务逻辑；`routers/` 放 FastAPI 路由。除视频文件流接口外，JSON API 统一返回：
+```powershell
+npm run dev:all
+```
+
+Open:
+
+```text
+http://127.0.0.1:5174
+```
+
+You can also run the services separately:
+
+```powershell
+npm run api
+npm run dev
+```
+
+## Local Data
+
+The API stores local runtime state under `local-data/`. This directory is intentionally ignored by Git.
+
+```text
+local-data/
+  registry/
+    datasets.json
+    videos.json
+    images.json
+    tasks.json
+    annotation-prompt.txt
+    annotation-settings.json
+    loras.json
+    evaluations.json
+  datasets/
+  videos/
+  training-runs/
+  evaluation-runs/
+```
+
+Training preparation writes:
+
+```text
+local-data/training-runs/<run_id>/dataset_manifest.jsonl
+local-data/training-runs/<run_id>/train_config.json
+```
+
+Evaluation preparation writes:
+
+```text
+local-data/evaluation-runs/<run_id>/generation_request.json
+```
+
+## Annotation
+
+The annotation page edits the prompt stored at `local-data/registry/annotation-prompt.txt`. The current cloud annotation service reads that prompt, appends the dataset trigger token and structured JSON constraints, and calls Azure OpenAI.
+
+Default Azure settings are stored in `server/app/core/config.py` and can be overridden through `local-data/registry/annotation-settings.json`.
+
+The expected annotation output includes semantic category, subject, scene type, people count, view angle, 0-100 quality score, caption suggestion, tags, and warnings. The quality score is produced by the annotation agent, not by local screening.
+
+## Model And GPU Checks
+
+The Models / GPU page calls:
+
+```text
+GET /api/models/status
+GET /api/models/checks/{asset_id}
+```
+
+It checks for:
+
+- NVIDIA GPU through `nvidia-smi`.
+- Docker and `docker.io/vllm/vllm-openai:v0.23.0`.
+- Qwen Image DiT, VAE, and text encoder directories under `/data/models/`.
+- Qwen2.5-VL-7B annotation model under `/data/models/qwen2.5-vl-7b-instruct`.
+- musubi-tuner under `/opt/musubi-tuner`.
+
+These checks report local readiness. They do not start training or inference by themselves.
+
+## Azure GPU VM Deployment
+
+The repository includes a deployment helper for a North Europe Spot A100 VM:
+
+```powershell
+./scripts/deploy-northeurope-a100-spot.ps1 `
+  -ResourceGroup rg-qwen-lora-neu `
+  -VmName vm-qwen-lora-a100 `
+  -ImageResourceGroup RG-AI-IMAGE-NORTHEUROPE `
+  -Layer2ImageName ai-a100-layer2-orchestrator-ubuntu2204-202606201236 `
+  -AdminUsername azureuser `
+  -SshPublicKeyPath $env:USERPROFILE\.ssh\id_rsa.pub
+```
+
+The source image must be available in the same Azure region as the VM. Managed images are regional; if your layer2 image exists only in another region, replicate it first or pass a Shared Image Gallery version ID through `-ImageId`.
+
+The script creates a Spot `Standard_NC24ads_A100_v4` VM by default, installs runtime packages through cloud-init, pulls the pinned vLLM image, downloads configurable Hugging Face model assets, clones musubi-tuner, installs the workbench, and registers local systemd services.
+
+Use `-HuggingFaceToken` when the selected model repositories require authentication.
+
+## API Shape
+
+Most JSON APIs return:
 
 ```json
 {
@@ -47,68 +162,17 @@ python -m pip install -r requirements.txt
 }
 ```
 
-启动开发服务器：
+Image and video file endpoints return file responses directly.
+
+## Validation
+
+Common checks before committing:
 
 ```powershell
-npm run dev:all
+python -m compileall server\app
+npm run build
 ```
 
-然后访问：
+## Project Status
 
-```text
-http://127.0.0.1:5174
-```
-
-也可以分别启动：
-
-```powershell
-npm run api
-npm run dev
-```
-
-## 当前实现范围
-
-已完成 Ant Design Pro 风格骨架和 Python + FastAPI 本地 API：
-
-- Dashboard 简化总览
-- 使用 `react-router-dom` 路由，不再用单个 App 内状态切换页面
-- Videos 支持选择本地视频、导入本地路径或创建下载任务；抽帧时选择目标数据集
-- 不再提供独立 Images 菜单；必须从 Dataset 进入 `/datasets/:datasetId` 查看该数据集图片
-- Datasets 数据集、caption 工作区和 DatasetBuild 入口
-- Datasets / Dataset Detail 显示训练资源预估：图片数量主要影响训练时间和 steps，显存主要由模型、分辨率、batch、精度和优化策略决定
-- Annotation 中文标注任务入口，标注提示词直接显示，可手动修改
-- Training 训练向导和训练监控面板
-- LoRA Versions 版本列表
-- Evaluation 测试生成配置和图片结果查看，不做评分
-- Models & GPU 状态面板
-- Tasks 异步任务列表
-
-FastAPI 本地 API 当前已接入这些 CPU 阶段能力：
-
-- Dataset 文件状态管理
-- 视频导入 / 下载资源管理
-- ffmpeg 自动识别视频时长、分辨率和 FPS
-- ffmpeg 抽帧任务入口
-- 抽帧 manifest 导入图片资产索引
-- 图片按 Dataset 查看
-- 中文标注提示词本地保存
-- 任务队列与状态轮询
-
-LLM/VLM 标注和 Qwen Image LoRA 训练保留入口，等本地 GPU/vLLM/musubi 运行条件满足后接入。
-
-## CPU 阶段本地数据
-
-FastAPI 本地 API 会把状态写到：
-
-```text
-qwen-image-lora-workbench/local-data/
-  registry/
-    datasets.json
-    videos.json
-    images.json
-    tasks.json
-    annotation-prompt.txt
-  datasets/
-```
-
-这些文件是本地工作状态，不需要远程服务器。
+This is an active local workbench. Dataset preparation, annotation review, training manifest preparation, LoRA registry, evaluation request tracking, and model/GPU readiness checks are implemented. Full Qwen Image LoRA training and generation runners are expected to execute on a GPU VM using the generated local artifacts.

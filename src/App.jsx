@@ -6,8 +6,7 @@ import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 're
 
 const { Text, Paragraph } = Typography;
 const { TextArea } = Input;
-const loras = [];
-const localApiOrigin = import.meta.env.VITE_LOCAL_API_ORIGIN || 'http://127.0.0.1:8787';
+const localApiOrigin = import.meta.env.VITE_LOCAL_API_ORIGIN || `${window.location.protocol}//${window.location.hostname}:8787`;
 
 const route = {
   path: '/',
@@ -69,9 +68,9 @@ function evaluationResultImageUrl(result) {
 
 function statusTag(status) {
   const colorMap = {
-    可用: 'green', 可训练: 'green', 已标注: 'green', 完成: 'green', 候选: 'blue', 运行中: 'processing',
-    等待中: 'default', 等待GPU: 'blue', 等待GPU训练: 'blue', 等待GPU生成: 'blue', 训练中: 'processing', 下载中: 'processing', 整理中: 'orange', 待识别: 'orange', 待确认: 'blue', 未检查: 'orange', 未标注: 'orange',
-    需复核: 'orange', 缺少标注: 'red', 低质量: 'red', 失败: 'red', 归档: 'default',
+    可用: 'green', 可训练: 'green', 已标注: 'green', 完成: 'green', 镜像已就绪: 'green', 候选: 'blue', 运行中: 'processing',
+    等待中: 'default', 等待GPU: 'blue', 等待GPU训练: 'blue', 等待GPU生成: 'blue', 训练中: 'processing', 下载中: 'processing', 整理中: 'orange', 待识别: 'orange', 待确认: 'blue', 未检查: 'orange', 未标注: 'orange', 未安装: 'orange', 未就绪: 'orange',
+    需复核: 'orange', 缺少标注: 'red', 缺失: 'red', 低质量: 'red', 失败: 'red', 归档: 'default',
   };
   return <Tag color={colorMap[status] || 'default'}>{status || '未知'}</Tag>;
 }
@@ -909,9 +908,39 @@ function EvaluationPage({ loras: loraRows, evaluations, refresh }) {
   return <PageContainer title="测试生成" subTitle="配置 LoRA 测试 prompt，保存请求并回填 GPU 生成结果。"><Row gutter={[16, 16]}><Col xs={24} lg={9}><ProCard title="生成配置"><Form form={form} layout="vertical" initialValues={{ loraId: availableLoras[0]?.id, prompt: `${availableLoras[0]?.trigger || 'custom_trigger_token'}，清晰构图，正面视角，柔和光线`, negativePrompt: '低清晰度，严重模糊，文字水印，变形', seed: 42, count: 2, width: 1024, height: 1024, steps: 30, guidanceScale: 4 }} onFinish={submitEvaluation}><Form.Item name="loraId" label="LoRA"><Select allowClear placeholder="可选择基础模型" options={availableLoras.map((item) => ({ value: item.id, label: `${item.name} / ${item.status}` }))} /></Form.Item><Form.Item name="prompt" label="Prompt" rules={[{ required: true, message: '请输入 Prompt' }]}><TextArea rows={5} /></Form.Item><Form.Item name="negativePrompt" label="Negative Prompt"><TextArea rows={3} /></Form.Item><Row gutter={12}><Col span={12}><Form.Item name="seed" label="Seed"><InputNumber min={0} style={{ width: '100%' }} /></Form.Item></Col><Col span={12}><Form.Item name="count" label="数量"><InputNumber min={1} max={8} style={{ width: '100%' }} /></Form.Item></Col></Row><Row gutter={12}><Col span={12}><Form.Item name="width" label="宽"><InputNumber min={512} max={2048} step={64} style={{ width: '100%' }} /></Form.Item></Col><Col span={12}><Form.Item name="height" label="高"><InputNumber min={512} max={2048} step={64} style={{ width: '100%' }} /></Form.Item></Col></Row><Row gutter={12}><Col span={12}><Form.Item name="steps" label="Steps"><InputNumber min={1} max={100} style={{ width: '100%' }} /></Form.Item></Col><Col span={12}><Form.Item name="guidanceScale" label="CFG"><InputNumber min={0} max={20} step={0.5} style={{ width: '100%' }} /></Form.Item></Col></Row><Button type="primary" block htmlType="submit" loading={submitting}>准备测试生成</Button></Form><Divider /><Alert type="info" showIcon message="GPU 回填方式" description="GPU VM 可调用结果导入接口，或在页面里手动导入生成图片；导入后这里会显示真实图片。" /></ProCard></Col><Col xs={24} lg={15}><ProCard title="生成请求" extra={<Button onClick={refresh}>刷新</Button>}>{evaluations.length ? <div className="page-stack">{evaluations.map((item) => <div className="evaluation-run" key={item.id}><Space wrap><Text strong>{item.loraName}</Text>{statusTag(item.status)}<Tag>seed {item.seed}</Tag><Tag>{item.width}x{item.height}</Tag><Text type="secondary">{item.runId}</Text></Space><Paragraph ellipsis={{ rows: 2, expandable: true }}>{item.prompt}</Paragraph><div className="generated-grid">{(item.results || []).map((result) => <div className="generated-card" key={result.id}>{result.imageUrl ? <img className="generated-image" src={evaluationResultImageUrl(result)} alt={`seed ${result.seed}`} /> : <div className="generated-preview">{result.status || item.status}</div>}<div className="generated-meta"><Space direction="vertical" size={6} style={{ width: '100%' }}><Space wrap><Text>seed {result.seed}</Text>{statusTag(result.status || item.status)}</Space>{result.error ? <Text type="danger">{result.error}</Text> : null}<Space wrap><Button size="small" loading={uploadingResult === `${item.id}:${result.id}`} onClick={() => chooseResultImage(item.id, result.id)}>导入结果</Button><Button size="small" onClick={() => markResult(item.id, result.id, '失败')}>标记失败</Button></Space></Space></div></div>)}</div></div>)}</div> : <Alert type="info" showIcon message="还没有生成请求" description="准备请求后，GPU VM 可读取 local-data/evaluation-runs 下的 generation_request.json 执行生成。" />}</ProCard></Col></Row></PageContainer>;
 }
 function ModelsPage() {
-  return <PageContainer title="模型 / GPU" subTitle="本地模型、vLLM 和 GPU 状态。"><Row gutter={[16, 16]}><Col xs={24} lg={14}><ProCard title="模型路径"><List dataSource={['Qwen Image 2512 DiT', 'Qwen Image VAE', 'Qwen Image Text Encoder', 'Qwen2.5-VL-7B 标注模型', 'musubi-tuner']} renderItem={(item) => <List.Item actions={[<Button key="check">检查</Button>]}><List.Item.Meta title={item} description="本地路径待接入后端检测" /></List.Item>} /></ProCard></Col><Col xs={24} lg={10}><ProCard title="GPU / vLLM"><Descriptions column={1} bordered size="small"><Descriptions.Item label="当前阶段">CPU 可执行内容</Descriptions.Item><Descriptions.Item label="vLLM">暂不启动</Descriptions.Item><Descriptions.Item label="训练">暂不启动</Descriptions.Item></Descriptions></ProCard></Col></Row></PageContainer>;
+  const [status, setStatus] = useState();
+  const [loading, setLoading] = useState(false);
+  const [checking, setChecking] = useState('');
+  async function loadStatus() {
+    setLoading(true);
+    try {
+      const payload = await api('/api/models/status');
+      setStatus(payload);
+    } catch (error) {
+      message.error(`读取模型状态失败：${error.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => { loadStatus(); }, []);
+  async function checkAsset(assetId) {
+    setChecking(assetId);
+    try {
+      const payload = await api(`/api/models/checks/${assetId}`);
+      message.success(`${payload.check?.name || payload.check?.id || assetId}：${payload.check?.status || '完成'}`);
+      loadStatus();
+    } catch (error) {
+      message.error(`检查失败：${error.message}`);
+    } finally {
+      setChecking('');
+    }
+  }
+  const assets = status?.assets || [];
+  const gpu = status?.gpu || {};
+  const docker = status?.docker || {};
+  const summary = status?.summary || {};
+  return <PageContainer title="模型 / GPU" subTitle="检查本地 GPU、vLLM 镜像、Qwen Image 模型资产和训练工具状态。"><Row gutter={[16, 16]}><Col xs={24} lg={15}><ProCard title="模型与工具" extra={<Button loading={loading} onClick={loadStatus}>刷新</Button>}><List loading={loading} dataSource={assets} renderItem={(item) => <List.Item actions={[<Button key="check" loading={checking === item.id} onClick={() => checkAsset(item.id)}>检查</Button>]}><List.Item.Meta title={<Space wrap><Text strong>{item.name}</Text>{statusTag(item.status)}{item.required ? <Tag>必需</Tag> : null}</Space>} description={<Space direction="vertical" size={2}><Text>{item.path}</Text><Text type="secondary">{item.fileCount || 0} 个文件 / {item.size || '0 B'} / {item.kind}</Text></Space>} /></List.Item>} /></ProCard></Col><Col xs={24} lg={9}><div className="page-stack"><ProCard title="GPU"><Descriptions column={1} bordered size="small"><Descriptions.Item label="状态">{statusTag(gpu.status || '未知')}</Descriptions.Item>{(gpu.gpus || []).map((item, index) => <React.Fragment key={`${item.name}-${index}`}><Descriptions.Item label={`GPU ${index}`}>{item.name}</Descriptions.Item><Descriptions.Item label="显存">{item.memoryUsedMb} / {item.memoryTotalMb} MB</Descriptions.Item><Descriptions.Item label="驱动">{item.driverVersion}</Descriptions.Item><Descriptions.Item label="温度 / 利用率">{item.temperatureC} C / {item.utilizationPct}%</Descriptions.Item></React.Fragment>)}{gpu.message ? <Descriptions.Item label="信息">{gpu.message}</Descriptions.Item> : null}</Descriptions><Divider /><Button loading={checking === 'gpu'} onClick={() => checkAsset('gpu')}>检查 GPU</Button></ProCard><ProCard title="vLLM / Docker"><Descriptions column={1} bordered size="small"><Descriptions.Item label="Docker">{statusTag(docker.status || '未知')}</Descriptions.Item><Descriptions.Item label="版本">{docker.version || '-'}</Descriptions.Item><Descriptions.Item label="vLLM 镜像">{docker.vllmImage || '-'}</Descriptions.Item><Descriptions.Item label="镜像状态">{docker.imagePresent ? <Tag color="green">已拉取</Tag> : <Tag color="orange">未发现</Tag>}</Descriptions.Item><Descriptions.Item label="整体就绪">{summary.allReady ? <Tag color="green">是</Tag> : <Tag color="orange">否</Tag>}</Descriptions.Item></Descriptions><Divider /><Button loading={checking === 'vllm'} onClick={() => checkAsset('vllm')}>检查 vLLM</Button></ProCard></div></Col></Row></PageContainer>;
 }
-
 function TasksPage({ tasks, refresh }) {
   async function classify(task) {
     await api('/api/classifications', { method: 'POST', body: JSON.stringify({ datasetId: task.input.datasetId, sourceId: task.input.sourceId, sourceDir: task.input.sourceDir }) });

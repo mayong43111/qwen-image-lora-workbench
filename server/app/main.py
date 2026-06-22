@@ -8,7 +8,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from .core.config import DATA_ROOT
 from .core.responses import exception_handler
 from .core.storage import ensure_data
-from .routers import annotation, datasets, summary, tasks, training, videos
+from .routers import annotation, datasets, models, summary, tasks, training, videos
 
 
 def create_app() -> FastAPI:
@@ -27,6 +27,7 @@ def create_app() -> FastAPI:
     app.include_router(videos.router)
     app.include_router(tasks.router)
     app.include_router(training.router)
+    app.include_router(models.router)
     app.include_router(annotation.router)
 
     @app.on_event("startup")
