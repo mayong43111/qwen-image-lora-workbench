@@ -663,7 +663,7 @@ function DatasetsPage({ datasets, refresh }) {
   );
 }
 
-function DatasetDetailPage({ datasets }) {
+function DatasetDetailPage({ datasets, refresh }) {
   const { datasetId } = useParams();
   const dataset = datasets.find((item) => item.id === datasetId) || datasets[0];
   const [rows, setRows] = useState([]);
@@ -793,10 +793,9 @@ function DatasetDetailPage({ datasets }) {
     setAnnotatingLoading(true);
     try {
       const payload = await api(`/api/datasets/${dataset.id}/images/annotate`, { method: 'POST', body: JSON.stringify({ imageIds }) });
-      setRows(payload.images || []);
       setSelectedRowKeys([]);
-      const failed = payload.failed?.length ? `，失败 ${payload.failed.length} 张` : '';
-      message.success(`智能体已标注 ${payload.updated || 0} 张图片${failed}`);
+      message.success(`智能体标注任务已创建：${payload.task?.target || dataset.name}`);
+      refresh?.();
     } catch (error) {
       message.error(`智能体标注失败：${error.message}`);
     } finally {
@@ -951,7 +950,7 @@ function TasksPage({ tasks, refresh }) {
 }
 
 function AppRoutes({ data }) {
-  return <Routes><Route path="/" element={<Navigate to="/dashboard" replace />} /><Route path="/dashboard" element={<DashboardPage datasets={data.datasets} tasks={data.tasks} loras={data.loras} apiError={data.error} />} /><Route path="/videos" element={<VideosPage datasets={data.datasets} videos={data.videos} refresh={data.refresh} />} /><Route path="/videos/:videoId" element={<VideoDetailPage datasets={data.datasets} videos={data.videos} refresh={data.refresh} />} /><Route path="/datasets" element={<DatasetsPage datasets={data.datasets} refresh={data.refresh} />} /><Route path="/datasets/:datasetId" element={<DatasetDetailPage datasets={data.datasets} />} /><Route path="/annotation" element={<AnnotationPage />} /><Route path="/training" element={<TrainingPage datasets={data.datasets} refresh={data.refresh} />} /><Route path="/loras" element={<LorasPage datasets={data.datasets} loras={data.loras} refresh={data.refresh} />} /><Route path="/evaluation" element={<EvaluationPage loras={data.loras} evaluations={data.evaluations} refresh={data.refresh} />} /><Route path="/models" element={<ModelsPage />} /><Route path="/tasks" element={<TasksPage tasks={data.tasks} refresh={data.refresh} />} /><Route path="*" element={<Navigate to="/dashboard" replace />} /></Routes>;
+  return <Routes><Route path="/" element={<Navigate to="/dashboard" replace />} /><Route path="/dashboard" element={<DashboardPage datasets={data.datasets} tasks={data.tasks} loras={data.loras} apiError={data.error} />} /><Route path="/videos" element={<VideosPage datasets={data.datasets} videos={data.videos} refresh={data.refresh} />} /><Route path="/videos/:videoId" element={<VideoDetailPage datasets={data.datasets} videos={data.videos} refresh={data.refresh} />} /><Route path="/datasets" element={<DatasetsPage datasets={data.datasets} refresh={data.refresh} />} /><Route path="/datasets/:datasetId" element={<DatasetDetailPage datasets={data.datasets} refresh={data.refresh} />} /><Route path="/annotation" element={<AnnotationPage />} /><Route path="/training" element={<TrainingPage datasets={data.datasets} refresh={data.refresh} />} /><Route path="/loras" element={<LorasPage datasets={data.datasets} loras={data.loras} refresh={data.refresh} />} /><Route path="/evaluation" element={<EvaluationPage loras={data.loras} evaluations={data.evaluations} refresh={data.refresh} />} /><Route path="/models" element={<ModelsPage />} /><Route path="/tasks" element={<TasksPage tasks={data.tasks} refresh={data.refresh} />} /><Route path="*" element={<Navigate to="/dashboard" replace />} /></Routes>;
 }
 
 export default function App() {

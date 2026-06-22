@@ -192,3 +192,46 @@ def start_classification(body: dict[str, Any]) -> dict[str, Any]:
     task = create_task("基础分类", f"{body['sourceId']} -> {body['datasetId']}", body)
     start_thread(classification_worker, task, body)
     return task
+
+
+def annotation_worker(task: dict[str, Any], dataset_id: str, body: dict[str, Any]) -> None:
+    from .annotation_service import annotate_dataset_images
+
+    image_count = len(body.get("imageIds") or [])
+    update_task(task["id"], {"status": "运行中", "progress": 5, "log": [f"开始智能体标注：{dataset_id}，图片 {image_count or '全部'} 张"]})
+    try:
+        result = annotate_dataset_images(dataset_id, body)
+        failed = result.get("failed") or []
+        updated = int(result.get("updated") or 0)
+        if failed:
+            append_task_log(task["id"], f"标注完成：成功 {updated} 张，失败 {len(failed)} 张", 90)
+        else:
+            append_task_log(task["id"], f"标注完成：成功 {updated} 张", 90)
+        update_task(task["id"], {
+            "status": "完成",
+            "progress": 100,
+            "output": {
+                "updated": updated,
+                "failed": failed,
+                "settings": result.get("settings") or {},
+            },
+        })
+    except Exception as error:
+        update_task(task["id"], {"status": "失败", "progress": 100, "error": str(error)})
+
+
+def start_annotation(dataset_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    if not dataset_id:
+        raise RuntimeError("必须提供 datasetId")
+    datasets = read_json(DATASETS_PATH, [])
+    dataset = next((item for item in datasets if item.get("id") == dataset_id), None)
+    if not dataset:
+        raise RuntimeError(f"数据集不存在：{dataset_id}")
+    body = body or {}
+    image_ids = body.get("imageIds") or []
+    target = f"{dataset.get('name') or dataset_id}"
+    if image_ids:
+        target = f"{target} ({len(image_ids)} 张)"
+    task = create_task("智能体标注", target, {**body, "datasetId": dataset_id})
+    start_thread(annotation_worker, task, dataset_id, body)
+    return task

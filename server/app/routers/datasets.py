@@ -3,8 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 
 from ..core.responses import fail, ok
-from ..services.annotation_service import annotate_dataset_images
 from ..services.dataset_service import create_dataset, dataset_image_file_response, import_dataset_image, list_dataset_images, list_datasets, mark_dataset_images_by_filter, screen_dataset_images, update_dataset_image
+from ..services.task_service import start_annotation
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
 
@@ -72,6 +72,6 @@ async def api_mark_dataset_images_by_filter(dataset_id: str, request: Request):
 @router.post("/{dataset_id}/images/annotate")
 async def api_annotate_dataset_images(dataset_id: str, request: Request):
     try:
-        return ok(annotate_dataset_images(dataset_id, await request.json()))
+        return ok({"task": start_annotation(dataset_id, await request.json())})
     except RuntimeError as error:
         return fail(str(error), 400)
