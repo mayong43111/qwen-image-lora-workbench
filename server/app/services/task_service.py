@@ -247,7 +247,18 @@ def annotation_worker(task: dict[str, Any], dataset_id: str, body: dict[str, Any
     image_count = len(body.get("imageIds") or [])
     update_task(task["id"], {"status": "运行中", "progress": 5, "log": [f"开始智能体标注：{dataset_id}，图片 {image_count or '全部'} 张"]})
     try:
-        result = annotate_dataset_images(dataset_id, body, should_cancel=lambda: is_cancel_requested(task["id"]))
+        def update_annotation_progress(event: dict[str, Any]) -> None:
+            total = max(1, int(event.get("total") or 1))
+            processed = int(event.get("processed") or 0)
+            progress = min(95, 5 + round(processed / total * 90))
+            failed = event.get("failed") or []
+            append_task_log(
+                task["id"],
+                f"标注进度：{processed}/{total}，成功 {event.get('updated') or 0} 张，失败 {len(failed)} 张，当前 {event.get('imageId')}",
+                progress,
+            )
+
+        result = annotate_dataset_images(dataset_id, body, should_cancel=lambda: is_cancel_requested(task["id"]), on_progress=update_annotation_progress)
         if result.get("cancelled") or is_cancel_requested(task["id"]):
             mark_cancelled(task["id"])
             return

@@ -5,7 +5,7 @@ import json
 import re
 import urllib.error
 import urllib.request
-from typing import Any
+from typing import Any, Callable
 
 from ..core.config import ANNOTATION_SETTINGS_PATH, DATASETS_PATH, DEFAULT_ANNOTATION_SETTINGS, IMAGES_PATH, PROMPT_PATH
 from ..core.storage import now_iso, read_json, write_json
@@ -244,7 +244,12 @@ def call_local_openai(image_url: str, prompt: str, settings: dict[str, Any]) -> 
     return parsed
 
 
-def annotate_dataset_images(dataset_id: str, body: dict[str, Any] | None = None, should_cancel: Any | None = None) -> dict[str, Any]:
+def annotate_dataset_images(
+    dataset_id: str,
+    body: dict[str, Any] | None = None,
+    should_cancel: Any | None = None,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     body = body or {}
     settings = get_annotation_settings_for_runtime()
     provider = body.get("provider") or settings.get("provider") or "cloud"
@@ -272,6 +277,8 @@ def annotate_dataset_images(dataset_id: str, body: dict[str, Any] | None = None,
     dataset = next((item for item in datasets if item.get("id") == dataset_id), None)
     prompt = annotation_prompt(dataset)
 
+    total = len(rows)
+    processed = 0
     for row in rows:
         if should_cancel and should_cancel():
             return {"images": dataset_images_from(images, dataset_id), "updated": updated, "failed": failed, "results": results, "cancelled": True, "settings": {"provider": provider, "cloudDeployment": (settings.get("cloud") or {}).get("deployment"), "localModel": (settings.get("local") or {}).get("model"), "localEndpoint": (settings.get("local") or {}).get("endpoint")}}
@@ -313,11 +320,17 @@ def annotate_dataset_images(dataset_id: str, body: dict[str, Any] | None = None,
             if annotation["captionSuggestion"]:
                 image["suggestion"] = annotation["captionSuggestion"]
             if not image.get("captionLocked"):
-                image["annotation"] = "未标注"
+                if annotation["captionSuggestion"]:
+                    image["caption"] = annotation["captionSuggestion"]
+                image["annotation"] = "已标注"
             image["updatedAt"] = now_iso()
             updated += 1
             results.append({"id": image_id, "llmClassification": annotation})
         except Exception as error:
             failed.append({"id": image_id, "error": str(error)})
+        processed += 1
+        write_json(IMAGES_PATH, images)
+        if on_progress:
+            on_progress({"processed": processed, "total": total, "updated": updated, "failed": failed, "imageId": image_id})
     write_json(IMAGES_PATH, images)
     return {"images": dataset_images_from(images, dataset_id), "updated": updated, "failed": failed, "results": results, "settings": {"provider": provider, "cloudDeployment": (settings.get("cloud") or {}).get("deployment"), "localModel": (settings.get("local") or {}).get("model"), "localEndpoint": (settings.get("local") or {}).get("endpoint")}}
