@@ -53,6 +53,20 @@ async function uploadDatasetImage(datasetId, file) {
   return payload && Object.prototype.hasOwnProperty.call(payload, 'data') ? payload.data : payload;
 }
 
+async function uploadEvaluationResult(evaluationId, resultId, file) {
+  const params = new URLSearchParams({ filename: file.name });
+  const response = await fetch(`${localApiOrigin}/api/evaluations/${evaluationId}/results/${resultId}/import-file?${params.toString()}`, { method: 'POST', body: file });
+  const text = await response.text();
+  const payload = text ? JSON.parse(text) : {};
+  if (!response.ok) throw new Error(payload.message || payload.error || response.statusText);
+  return payload && Object.prototype.hasOwnProperty.call(payload, 'data') ? payload.data : payload;
+}
+
+function evaluationResultImageUrl(result) {
+  if (!result?.imageUrl) return '';
+  return String(result.imageUrl).startsWith('/api/') ? `${localApiOrigin}${result.imageUrl}` : result.imageUrl;
+}
+
 function statusTag(status) {
   const colorMap = {
     可用: 'green', 可训练: 'green', 已标注: 'green', 完成: 'green', 候选: 'blue', 运行中: 'processing',
@@ -848,6 +862,7 @@ function LorasPage({ datasets, loras: loraRows, refresh }) {
 function EvaluationPage({ loras: loraRows, evaluations, refresh }) {
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
+  const [uploadingResult, setUploadingResult] = useState('');
   async function submitEvaluation(values) {
     setSubmitting(true);
     try {
@@ -861,10 +876,38 @@ function EvaluationPage({ loras: loraRows, evaluations, refresh }) {
       setSubmitting(false);
     }
   }
+  function chooseResultImage(evaluationId, resultId) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/png,image/jpeg,image/webp';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      setUploadingResult(`${evaluationId}:${resultId}`);
+      try {
+        await uploadEvaluationResult(evaluationId, resultId, file);
+        message.success('生成结果已导入');
+        refresh?.();
+      } catch (error) {
+        message.error(`导入失败：${error.message}`);
+      } finally {
+        setUploadingResult('');
+      }
+    };
+    input.click();
+  }
+  async function markResult(evaluationId, resultId, status) {
+    try {
+      await api(`/api/evaluations/${evaluationId}/results/${resultId}`, { method: 'PUT', body: JSON.stringify({ status }) });
+      message.success('结果状态已更新');
+      refresh?.();
+    } catch (error) {
+      message.error(`更新失败：${error.message}`);
+    }
+  }
   const availableLoras = loraRows.filter((item) => item.status !== '归档');
-  return <PageContainer title="测试生成" subTitle="配置 LoRA 测试 prompt，保存待 GPU VM 执行的生成请求和结果记录。"><Row gutter={[16, 16]}><Col xs={24} lg={9}><ProCard title="生成配置"><Form form={form} layout="vertical" initialValues={{ loraId: availableLoras[0]?.id, prompt: `${availableLoras[0]?.trigger || 'custom_trigger_token'}，清晰构图，正面视角，柔和光线`, negativePrompt: '低清晰度，严重模糊，文字水印，变形', seed: 42, count: 2, width: 1024, height: 1024, steps: 30, guidanceScale: 4 }} onFinish={submitEvaluation}><Form.Item name="loraId" label="LoRA"><Select allowClear placeholder="可选择基础模型" options={availableLoras.map((item) => ({ value: item.id, label: `${item.name} / ${item.status}` }))} /></Form.Item><Form.Item name="prompt" label="Prompt" rules={[{ required: true, message: '请输入 Prompt' }]}><TextArea rows={5} /></Form.Item><Form.Item name="negativePrompt" label="Negative Prompt"><TextArea rows={3} /></Form.Item><Row gutter={12}><Col span={12}><Form.Item name="seed" label="Seed"><InputNumber min={0} style={{ width: '100%' }} /></Form.Item></Col><Col span={12}><Form.Item name="count" label="数量"><InputNumber min={1} max={8} style={{ width: '100%' }} /></Form.Item></Col></Row><Row gutter={12}><Col span={12}><Form.Item name="width" label="宽"><InputNumber min={512} max={2048} step={64} style={{ width: '100%' }} /></Form.Item></Col><Col span={12}><Form.Item name="height" label="高"><InputNumber min={512} max={2048} step={64} style={{ width: '100%' }} /></Form.Item></Col></Row><Row gutter={12}><Col span={12}><Form.Item name="steps" label="Steps"><InputNumber min={1} max={100} style={{ width: '100%' }} /></Form.Item></Col><Col span={12}><Form.Item name="guidanceScale" label="CFG"><InputNumber min={0} max={20} step={0.5} style={{ width: '100%' }} /></Form.Item></Col></Row><Button type="primary" block htmlType="submit" loading={submitting}>准备测试生成</Button></Form></ProCard></Col><Col xs={24} lg={15}><ProCard title="生成请求" extra={<Button onClick={refresh}>刷新</Button>}>{evaluations.length ? <div className="page-stack">{evaluations.map((item) => <div className="evaluation-run" key={item.id}><Space wrap><Text strong>{item.loraName}</Text>{statusTag(item.status)}<Tag>seed {item.seed}</Tag><Tag>{item.width}x{item.height}</Tag></Space><Paragraph ellipsis={{ rows: 2, expandable: true }}>{item.prompt}</Paragraph><div className="generated-grid">{(item.results || []).map((result) => <div className="generated-card" key={result.id}>{result.imageUrl ? <img className="generated-image" src={result.imageUrl} alt={`seed ${result.seed}`} /> : <div className="generated-preview">{result.status || item.status}</div>}<div className="generated-meta"><Text>seed {result.seed}</Text></div></div>)}</div></div>)}</div> : <Alert type="info" showIcon message="还没有生成请求" description="准备请求后，GPU VM 可读取 local-data/evaluation-runs 下的 generation_request.json 执行生成。" />}</ProCard></Col></Row></PageContainer>;
+  return <PageContainer title="测试生成" subTitle="配置 LoRA 测试 prompt，保存请求并回填 GPU 生成结果。"><Row gutter={[16, 16]}><Col xs={24} lg={9}><ProCard title="生成配置"><Form form={form} layout="vertical" initialValues={{ loraId: availableLoras[0]?.id, prompt: `${availableLoras[0]?.trigger || 'custom_trigger_token'}，清晰构图，正面视角，柔和光线`, negativePrompt: '低清晰度，严重模糊，文字水印，变形', seed: 42, count: 2, width: 1024, height: 1024, steps: 30, guidanceScale: 4 }} onFinish={submitEvaluation}><Form.Item name="loraId" label="LoRA"><Select allowClear placeholder="可选择基础模型" options={availableLoras.map((item) => ({ value: item.id, label: `${item.name} / ${item.status}` }))} /></Form.Item><Form.Item name="prompt" label="Prompt" rules={[{ required: true, message: '请输入 Prompt' }]}><TextArea rows={5} /></Form.Item><Form.Item name="negativePrompt" label="Negative Prompt"><TextArea rows={3} /></Form.Item><Row gutter={12}><Col span={12}><Form.Item name="seed" label="Seed"><InputNumber min={0} style={{ width: '100%' }} /></Form.Item></Col><Col span={12}><Form.Item name="count" label="数量"><InputNumber min={1} max={8} style={{ width: '100%' }} /></Form.Item></Col></Row><Row gutter={12}><Col span={12}><Form.Item name="width" label="宽"><InputNumber min={512} max={2048} step={64} style={{ width: '100%' }} /></Form.Item></Col><Col span={12}><Form.Item name="height" label="高"><InputNumber min={512} max={2048} step={64} style={{ width: '100%' }} /></Form.Item></Col></Row><Row gutter={12}><Col span={12}><Form.Item name="steps" label="Steps"><InputNumber min={1} max={100} style={{ width: '100%' }} /></Form.Item></Col><Col span={12}><Form.Item name="guidanceScale" label="CFG"><InputNumber min={0} max={20} step={0.5} style={{ width: '100%' }} /></Form.Item></Col></Row><Button type="primary" block htmlType="submit" loading={submitting}>准备测试生成</Button></Form><Divider /><Alert type="info" showIcon message="GPU 回填方式" description="GPU VM 可调用结果导入接口，或在页面里手动导入生成图片；导入后这里会显示真实图片。" /></ProCard></Col><Col xs={24} lg={15}><ProCard title="生成请求" extra={<Button onClick={refresh}>刷新</Button>}>{evaluations.length ? <div className="page-stack">{evaluations.map((item) => <div className="evaluation-run" key={item.id}><Space wrap><Text strong>{item.loraName}</Text>{statusTag(item.status)}<Tag>seed {item.seed}</Tag><Tag>{item.width}x{item.height}</Tag><Text type="secondary">{item.runId}</Text></Space><Paragraph ellipsis={{ rows: 2, expandable: true }}>{item.prompt}</Paragraph><div className="generated-grid">{(item.results || []).map((result) => <div className="generated-card" key={result.id}>{result.imageUrl ? <img className="generated-image" src={evaluationResultImageUrl(result)} alt={`seed ${result.seed}`} /> : <div className="generated-preview">{result.status || item.status}</div>}<div className="generated-meta"><Space direction="vertical" size={6} style={{ width: '100%' }}><Space wrap><Text>seed {result.seed}</Text>{statusTag(result.status || item.status)}</Space>{result.error ? <Text type="danger">{result.error}</Text> : null}<Space wrap><Button size="small" loading={uploadingResult === `${item.id}:${result.id}`} onClick={() => chooseResultImage(item.id, result.id)}>导入结果</Button><Button size="small" onClick={() => markResult(item.id, result.id, '失败')}>标记失败</Button></Space></Space></div></div>)}</div></div>)}</div> : <Alert type="info" showIcon message="还没有生成请求" description="准备请求后，GPU VM 可读取 local-data/evaluation-runs 下的 generation_request.json 执行生成。" />}</ProCard></Col></Row></PageContainer>;
 }
-
 function ModelsPage() {
   return <PageContainer title="模型 / GPU" subTitle="本地模型、vLLM 和 GPU 状态。"><Row gutter={[16, 16]}><Col xs={24} lg={14}><ProCard title="模型路径"><List dataSource={['Qwen Image 2512 DiT', 'Qwen Image VAE', 'Qwen Image Text Encoder', 'Qwen2.5-VL-7B 标注模型', 'musubi-tuner']} renderItem={(item) => <List.Item actions={[<Button key="check">检查</Button>]}><List.Item.Meta title={item} description="本地路径待接入后端检测" /></List.Item>} /></ProCard></Col><Col xs={24} lg={10}><ProCard title="GPU / vLLM"><Descriptions column={1} bordered size="small"><Descriptions.Item label="当前阶段">CPU 可执行内容</Descriptions.Item><Descriptions.Item label="vLLM">暂不启动</Descriptions.Item><Descriptions.Item label="训练">暂不启动</Descriptions.Item></Descriptions></ProCard></Col></Row></PageContainer>;
 }

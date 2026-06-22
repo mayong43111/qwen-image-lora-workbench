@@ -5,6 +5,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from fastapi.responses import FileResponse
+
 from ..core.config import DATASETS_PATH, EVALUATIONS_PATH, EVALUATION_RUNS_DIR, IMAGES_PATH, LORAS_PATH, TRAINING_RUNS_DIR
 from ..core.storage import now_iso, read_json, safe_id, unique_id, write_json
 from .dataset_service import dataset_image_path, list_datasets
@@ -17,6 +19,17 @@ def list_loras() -> list[dict[str, Any]]:
 
 def list_evaluations() -> list[dict[str, Any]]:
     return read_json(EVALUATIONS_PATH, [])
+
+
+def evaluation_by_id(evaluation_id: str) -> dict[str, Any]:
+    evaluation = next((item for item in list_evaluations() if item.get("id") == evaluation_id), None)
+    if not evaluation:
+        raise RuntimeError(f"测试生成记录不存在：{evaluation_id}")
+    return evaluation
+
+
+def save_evaluations(evaluations: list[dict[str, Any]]) -> None:
+    write_json(EVALUATIONS_PATH, evaluations)
 
 
 def dataset_by_id(dataset_id: str) -> dict[str, Any]:
@@ -175,3 +188,76 @@ def create_evaluation_job(body: dict[str, Any]) -> dict[str, Any]:
     update_task(task["id"], task_patch)
     task = {**task, **task_patch}
     return {"evaluation": evaluation, "task": task}
+
+
+def update_evaluation(evaluation_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    evaluations = list_evaluations()
+    index = next((i for i, item in enumerate(evaluations) if item.get("id") == evaluation_id), -1)
+    if index < 0:
+        raise RuntimeError(f"测试生成记录不存在：{evaluation_id}")
+    allowed = {"status", "notes", "prompt", "negativePrompt", "seed", "steps", "guidanceScale"}
+    patch = {key: value for key, value in body.items() if key in allowed}
+    evaluations[index] = {**evaluations[index], **patch, "updatedAt": now_iso()}
+    save_evaluations(evaluations)
+    return evaluations[index]
+
+
+def update_evaluation_result(evaluation_id: str, result_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    evaluations = list_evaluations()
+    evaluation_index = next((i for i, item in enumerate(evaluations) if item.get("id") == evaluation_id), -1)
+    if evaluation_index < 0:
+        raise RuntimeError(f"测试生成记录不存在：{evaluation_id}")
+    results = evaluations[evaluation_index].get("results") or []
+    result_index = next((i for i, item in enumerate(results) if item.get("id") == result_id), -1)
+    if result_index < 0:
+        raise RuntimeError(f"生成结果不存在：{result_id}")
+    allowed = {"status", "seed", "imagePath", "imageUrl", "error", "metrics", "notes"}
+    patch = {key: value for key, value in body.items() if key in allowed}
+    if patch.get("imagePath") and not patch.get("imageUrl"):
+        patch["imageUrl"] = f"/api/evaluations/{evaluation_id}/results/{result_id}/file"
+    results[result_index] = {**results[result_index], **patch, "updatedAt": now_iso()}
+    if results[result_index].get("imagePath") and results[result_index].get("status") in (None, "等待GPU生成"):
+        results[result_index]["status"] = "完成"
+    evaluations[evaluation_index]["results"] = results
+    if all(result.get("status") == "完成" for result in results):
+        evaluations[evaluation_index]["status"] = "完成"
+    elif any(result.get("status") == "完成" for result in results):
+        evaluations[evaluation_index]["status"] = "部分完成"
+    elif any(result.get("status") == "失败" for result in results):
+        evaluations[evaluation_index]["status"] = "失败"
+    evaluations[evaluation_index]["updatedAt"] = now_iso()
+    save_evaluations(evaluations)
+    return evaluations[evaluation_index]
+
+
+def import_evaluation_result_file(evaluation_id: str, result_id: str, filename: str, content: bytes) -> dict[str, Any]:
+    evaluation = evaluation_by_id(evaluation_id)
+    result = next((item for item in evaluation.get("results") or [] if item.get("id") == result_id), None)
+    if not result:
+        raise RuntimeError(f"生成结果不存在：{result_id}")
+    suffix = Path(filename or "result.png").suffix.lower()
+    if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+        suffix = ".png"
+    run_dir = Path(str(evaluation.get("runDir") or (EVALUATION_RUNS_DIR / str(evaluation.get("runId") or evaluation_id))))
+    output_dir = run_dir / "results"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{result_id}{suffix}"
+    output_path.write_bytes(content)
+    return update_evaluation_result(evaluation_id, result_id, {"status": "完成", "imagePath": str(output_path), "imageUrl": f"/api/evaluations/{evaluation_id}/results/{result_id}/file"})
+
+
+def evaluation_result_file_response(evaluation_id: str, result_id: str) -> FileResponse:
+    evaluation = evaluation_by_id(evaluation_id)
+    result = next((item for item in evaluation.get("results") or [] if item.get("id") == result_id), None)
+    if not result or not result.get("imagePath"):
+        raise RuntimeError("生成结果还没有图片")
+    file_path = Path(str(result["imagePath"])).resolve()
+    runs_root = EVALUATION_RUNS_DIR.resolve()
+    if runs_root not in file_path.parents:
+        raise RuntimeError("生成图片路径不在评测目录内")
+    if not file_path.is_file():
+        raise RuntimeError(f"生成图片不存在：{file_path}")
+    media_type = "image/png" if file_path.suffix.lower() == ".png" else "image/jpeg"
+    if file_path.suffix.lower() == ".webp":
+        media_type = "image/webp"
+    return FileResponse(file_path, media_type=media_type, filename=file_path.name)
