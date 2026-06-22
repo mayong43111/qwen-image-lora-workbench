@@ -3,8 +3,6 @@ from __future__ import annotations
 import base64
 import json
 import re
-import shutil
-import subprocess
 import urllib.error
 import urllib.request
 from typing import Any
@@ -24,33 +22,54 @@ CATEGORY_LABELS = {
     "unknown": "未知",
 }
 
+CLOUD_SETTING_KEYS = {"type", "endpoint", "deployment", "apiVersion", "apiKey"}
+LOCAL_SETTING_KEYS = {"type", "endpoint", "model"}
+
+
+def pick_settings(source: dict[str, Any], keys: set[str]) -> dict[str, Any]:
+    return {key: source.get(key) for key in keys if key in source}
+
 
 def get_annotation_settings() -> dict[str, Any]:
     settings = read_json(ANNOTATION_SETTINGS_PATH, DEFAULT_ANNOTATION_SETTINGS)
-    return {**DEFAULT_ANNOTATION_SETTINGS, **settings}
+    cloud = {**DEFAULT_ANNOTATION_SETTINGS.get("cloud", {}), **pick_settings(settings.get("cloud") or {}, CLOUD_SETTING_KEYS)}
+    local = {**DEFAULT_ANNOTATION_SETTINGS.get("local", {}), **pick_settings(settings.get("local") or {}, LOCAL_SETTING_KEYS)}
+    merged = {
+        **DEFAULT_ANNOTATION_SETTINGS,
+        **settings,
+        "cloud": cloud,
+        "local": local,
+    }
+    cloud = merged.get("cloud") or {}
+    api_key = str(cloud.get("apiKey") or "")
+    merged["cloud"] = {**cloud, "apiKey": "", "apiKeyConfigured": bool(api_key)}
+    return merged
+
+
+def get_annotation_settings_for_runtime() -> dict[str, Any]:
+    settings = read_json(ANNOTATION_SETTINGS_PATH, DEFAULT_ANNOTATION_SETTINGS)
+    return {
+        **DEFAULT_ANNOTATION_SETTINGS,
+        **settings,
+        "cloud": {**DEFAULT_ANNOTATION_SETTINGS.get("cloud", {}), **pick_settings(settings.get("cloud") or {}, CLOUD_SETTING_KEYS)},
+        "local": {**DEFAULT_ANNOTATION_SETTINGS.get("local", {}), **pick_settings(settings.get("local") or {}, LOCAL_SETTING_KEYS)},
+    }
 
 
 def save_annotation_settings(body: dict[str, Any]) -> dict[str, Any]:
-    current = get_annotation_settings()
+    current = get_annotation_settings_for_runtime()
+    cloud = body.get("cloud") if isinstance(body.get("cloud"), dict) else None
+    if cloud is not None:
+        cloud = pick_settings(cloud, CLOUD_SETTING_KEYS)
+    if cloud is not None and not str(cloud.get("apiKey") or "").strip():
+        cloud = {**cloud, "apiKey": (current.get("cloud") or {}).get("apiKey") or ""}
     settings = {
         **current,
-        **{key: value for key, value in body.items() if key in {"provider", "cloud", "local"}},
+        **{key: value for key, value in body.items() if key in {"provider", "local"}},
+        **({"cloud": {**(current.get("cloud") or {}), **cloud}} if cloud is not None else {}),
     }
     write_json(ANNOTATION_SETTINGS_PATH, settings)
-    return settings
-
-
-def azure_cli_token() -> str:
-    az_path = shutil.which("az") or shutil.which("az.cmd")
-    if not az_path:
-        raise RuntimeError("找不到 Azure CLI，请确认 az 已安装并在 PATH 中")
-    command = [az_path, "account", "get-access-token", "--scope", "https://cognitiveservices.azure.com/.default", "-o", "json"]
-    result = subprocess.run(command, check=True, capture_output=True, text=True, encoding="utf-8")
-    payload = json.loads(result.stdout)
-    token = payload.get("accessToken")
-    if not token:
-        raise RuntimeError("Azure CLI 未返回访问令牌")
-    return str(token)
+    return get_annotation_settings()
 
 
 def extract_json_object(text: str) -> dict[str, Any]:
@@ -140,8 +159,11 @@ def call_azure_openai(image_url: str, prompt: str, settings: dict[str, Any]) -> 
     endpoint = str(cloud.get("endpoint") or "").rstrip("/")
     deployment = str(cloud.get("deployment") or "gpt-4o")
     api_version = str(cloud.get("apiVersion") or "2024-10-21")
+    api_key = str(cloud.get("apiKey") or "")
     if not endpoint:
         raise RuntimeError("Cloud 标注 endpoint 未配置")
+    if not api_key:
+        raise RuntimeError("Cloud 标注 API key 未配置")
     url = f"{endpoint}/openai/deployments/{deployment}/chat/completions?api-version={api_version}"
     body = {
         "messages": [
@@ -162,7 +184,7 @@ def call_azure_openai(image_url: str, prompt: str, settings: dict[str, Any]) -> 
         data=json.dumps(body).encode("utf-8"),
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {azure_cli_token()}",
+            "api-key": api_key,
         },
         method="POST",
     )
@@ -224,7 +246,7 @@ def call_local_openai(image_url: str, prompt: str, settings: dict[str, Any]) -> 
 
 def annotate_dataset_images(dataset_id: str, body: dict[str, Any] | None = None, should_cancel: Any | None = None) -> dict[str, Any]:
     body = body or {}
-    settings = get_annotation_settings()
+    settings = get_annotation_settings_for_runtime()
     provider = body.get("provider") or settings.get("provider") or "cloud"
     if provider not in {"cloud", "local"}:
         raise RuntimeError(f"不支持的标注供应商：{provider}")

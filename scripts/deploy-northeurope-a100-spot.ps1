@@ -162,12 +162,10 @@ write_files:
         "provider": "local",
         "cloud": {
           "type": "azure-openai",
-          "resourceGroup": "rg-auto-gen-chat",
-          "accountName": "aif-auto-gen-chat",
           "endpoint": "https://aif-auto-gen-chat.cognitiveservices.azure.com/",
           "deployment": "gpt-4o",
           "apiVersion": "2024-10-21",
-          "auth": "azure-cli-token"
+          "apiKey": ""
         },
         "local": {
           "type": "openai-compatible",

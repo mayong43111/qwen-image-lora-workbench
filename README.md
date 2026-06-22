@@ -10,7 +10,7 @@ The project is designed for a workstation or GPU VM workflow: prepare and review
 - Video import, local path import, download task creation, ffmpeg probing, and frame extraction.
 - Manual image upload into a dataset.
 - Local image screening for objective validity checks such as near-black frames, white frames, and low-information blur.
-- Agent annotation through a configurable prompt, currently supporting Azure OpenAI GPT-4o via Azure CLI token auth.
+- Agent annotation through a configurable prompt, supporting local Qwen2.5-VL through vLLM or cloud Azure OpenAI/Azure Foundry through endpoint and API key settings.
 - Caption review workflow with original suggestion and editable final training caption kept separate.
 - Tags, category, quality score, annotation status, and training selection filters.
 - LoRA training preparation that writes a manifest and training config under `local-data/training-runs/`.
@@ -22,7 +22,7 @@ The project is designed for a workstation or GPU VM workflow: prepare and review
 
 - Frontend: Vite, React 18, Ant Design 5, Ant Design Pro Components, React Router.
 - Backend: FastAPI, Uvicorn, Pillow, local JSON registry files.
-- Runtime tools: ffmpeg for probing/extraction, optional yt-dlp/aria2 for downloads, Azure CLI for cloud annotation auth.
+- Runtime tools: ffmpeg for probing/extraction, optional yt-dlp/aria2 for downloads, and optional local vLLM for Qwen2.5-VL annotation.
 
 ## Repository Layout
 
@@ -105,9 +105,9 @@ local-data/evaluation-runs/<run_id>/generation_request.json
 
 ## Annotation
 
-The annotation page edits the prompt stored at `local-data/registry/annotation-prompt.txt`. The current cloud annotation service reads that prompt, appends the dataset trigger token and structured JSON constraints, and calls Azure OpenAI.
+The annotation page edits the prompt stored at `local-data/registry/annotation-prompt.txt`. Annotation provider settings are available on both the Annotation page and the Model / GPU page. The current provider can be either local Qwen2.5-VL through the VM's vLLM service or a cloud Azure OpenAI/Azure Foundry endpoint configured with endpoint, API key, deployment/model, and API version.
 
-Default Azure settings are stored in `server/app/core/config.py` and can be overridden through `local-data/registry/annotation-settings.json`.
+Default provider settings are stored in `server/app/core/config.py` and can be overridden through `local-data/registry/annotation-settings.json`.
 
 The expected annotation output includes semantic category, subject, scene type, people count, view angle, 0-100 quality score, caption suggestion, tags, and warnings. The quality score is produced by the annotation agent, not by local screening.
 
