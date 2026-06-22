@@ -35,6 +35,8 @@ GENERIC_POSE_PHRASES = (
     "包括站立",
     "包括坐姿",
 )
+ORDINAL_TERMS = ("第一", "第二", "第三", "第四", "第五", "第1", "第2", "第3", "第4", "第5")
+POSITION_TERMS = ("左", "右", "上", "下", "中间", "前排", "后排", "从左到右", "从上到下", "阅读顺序")
 
 
 def pick_settings(source: dict[str, Any], keys: set[str]) -> dict[str, Any]:
@@ -167,7 +169,7 @@ def annotation_prompt(dataset: dict[str, Any] | None = None) -> str:
 - quality_score 必须是 0-100 的整数。
 - caption_suggestion 要写可复现的视觉信息，不要只写泛化短句，也不要编造图片中不可见的身份、情节、品牌或来源。
 - 如果图片是人物、人体姿势素材、速写、素描或解剖参考，caption_suggestion 必须具体描述姿势：站立/坐姿/跪姿/蹲姿/躺姿/前倾/后仰/扭转，躯干朝向和弯曲，头部朝向，肩膀和髋部角度，手臂抬起/弯曲/支撑/交叉/下垂，手掌或手指动作，双腿伸直/弯曲/交叉/跪地/踩地，重心落点和视角。
-- 如果同一张图包含多个人物或多幅姿势小图，必须按“左侧/中间/右侧/上方/下方/第一个/第二个”等位置逐个描述；不要只写“四幅不同姿势”“多种手部动作”这类概括。
+- 如果同一张图包含多个人物或多幅姿势小图，必须先说明阅读顺序，例如“按从左到右、从上到下阅读”。逐个描述时必须同时写序号和方位，例如“第 1 幅（左上）”“第 2 幅（上排中间）”“第 3 幅（右侧）”；不要只写“四幅不同姿势”“多种手部动作”这类概括，也不要只写“第一幅/第二幅”但不说明它在图中的位置。
 - 姿势素材的 caption_suggestion 至少 80 个汉字；如果有多幅姿势小图，每个可见姿势至少写一个独立分句，说明躯干、手臂/手部、腿部/脚部和重心。
 - 禁止只用“不同姿势”“多种姿势”“包括站立/坐姿/跪姿”等短语概括，除非后面继续逐个说明每个姿势的具体体态。
 - 对人体素描、解剖参考或未着衣人体，只做中性、学术的数据集描述，重点写姿势、体态、线稿/素描风格，不写挑逗、性感或主观评价。"""
@@ -194,6 +196,10 @@ def caption_needs_pose_retry(caption: str, dataset: dict[str, Any] | None) -> bo
     text = re.sub(r"\s+", "", caption or "")
     if len(text) < 80:
         return True
+    has_ordinal = any(term in caption for term in ORDINAL_TERMS)
+    has_position = any(term in caption for term in POSITION_TERMS)
+    if has_ordinal and not has_position:
+        return True
     return any(phrase in caption for phrase in GENERIC_POSE_PHRASES)
 
 
@@ -204,9 +210,9 @@ def pose_retry_prompt(prompt: str, caption: str) -> str:
 
 请重新标注同一张图片。caption_suggestion 必须更适合姿势 LoRA 训练：
 - 至少 80 个汉字。
-- 如果有多幅姿势小图，按左侧/中间/右侧/上方/下方/第一个/第二个逐个描述。
+- 如果有多幅姿势小图，必须先说明阅读顺序，例如“按从左到右、从上到下阅读”。逐个描述时必须同时写序号和方位，例如“第 1 幅（左上）”“第 2 幅（上排中间）”“第 3 幅（右侧）”。
 - 每个姿势都要写清：躯干朝向和弯曲、头部方向、手臂和手部动作、腿部和脚部位置、重心落点、画面视角。
-- 不要只写“不同姿势”“多种姿势”“包括站立/坐姿/跪姿”。"""
+- 不要只写“不同姿势”“多种姿势”“包括站立/坐姿/跪姿”，也不要只写“第一幅/第二幅”但不说明它在图中的位置。"""
 
 
 def call_azure_openai(image_url: str, prompt: str, settings: dict[str, Any]) -> dict[str, Any]:
