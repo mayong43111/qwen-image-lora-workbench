@@ -942,18 +942,13 @@ function ModelsPage() {
 }
 function TasksPage({ tasks, refresh }) {
   const terminalStatuses = new Set(['完成', '失败', '已取消']);
-  async function classify(task) {
-    await api('/api/classifications', { method: 'POST', body: JSON.stringify({ datasetId: task.input.datasetId, sourceId: task.input.sourceId, sourceDir: task.input.sourceDir }) });
-    message.success('已创建基础分类任务');
-    refresh();
-  }
   async function cancel(row) {
     if (!window.confirm(`取消任务「${row.type}」？`)) return;
     await api(`/api/tasks/${row.id}/cancel`, { method: 'POST' });
     message.success('已请求取消任务');
     refresh();
   }
-  return <PageContainer title="任务" subTitle="下载、抽帧、标注、训练和测试生成任务。"><ProCard extra={<Button onClick={refresh}>刷新</Button>}><ProTable search={false} options={false} toolBarRender={false} size="middle" rowKey="id" pagination={false} dataSource={tasks} columns={[{ title: '任务', dataIndex: 'type' }, { title: '目标', dataIndex: 'target' }, { title: '状态', dataIndex: 'status', render: statusTag }, { title: '进度', dataIndex: 'progress', render: (value) => <Progress percent={value || 0} size="small" /> }, { title: '操作', render: (_, row) => <Space wrap>{row.type === '抽帧' && row.status === '完成' ? <Button onClick={() => classify(row)}>基础分类</Button> : null}{!terminalStatuses.has(row.status) ? <Button danger onClick={() => cancel(row)}>取消</Button> : null}{row.type !== '抽帧' || row.status !== '完成' ? null : null}{terminalStatuses.has(row.status) && !(row.type === '抽帧' && row.status === '完成') ? <Text type="secondary">-</Text> : null}</Space> }]} /></ProCard></PageContainer>;
+  return <PageContainer title="任务" subTitle="下载、抽帧、标注、训练和测试生成任务。"><ProCard extra={<Button onClick={refresh}>刷新</Button>}><ProTable search={false} options={false} toolBarRender={false} size="middle" rowKey="id" pagination={false} dataSource={tasks} columns={[{ title: '任务', dataIndex: 'type' }, { title: '目标', dataIndex: 'target' }, { title: '状态', dataIndex: 'status', render: statusTag }, { title: '进度', dataIndex: 'progress', render: (value) => <Progress percent={value || 0} size="small" /> }, { title: '操作', render: (_, row) => !terminalStatuses.has(row.status) ? <Button danger onClick={() => cancel(row)}>取消</Button> : <Text type="secondary">-</Text> }]} /></ProCard></PageContainer>;
 }
 
 function AppRoutes({ data }) {
