@@ -7,6 +7,7 @@ import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 're
 const { Text, Paragraph } = Typography;
 const { TextArea } = Input;
 const localApiOrigin = import.meta.env.VITE_LOCAL_API_ORIGIN || `${window.location.protocol}//${window.location.hostname}:8787`;
+const IMAGE_FILE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif', '.tif', '.tiff']);
 
 const route = {
   path: '/',
@@ -59,6 +60,14 @@ async function uploadEvaluationResult(evaluationId, resultId, file) {
   const payload = text ? JSON.parse(text) : {};
   if (!response.ok) throw new Error(payload.message || payload.error || response.statusText);
   return payload && Object.prototype.hasOwnProperty.call(payload, 'data') ? payload.data : payload;
+}
+
+function isImageFile(file) {
+  if (!file) return false;
+  if (String(file.type || '').startsWith('image/')) return true;
+  const fileName = String(file.name || '').toLowerCase();
+  const extension = fileName.includes('.') ? fileName.slice(fileName.lastIndexOf('.')) : '';
+  return IMAGE_FILE_EXTENSIONS.has(extension);
 }
 
 function evaluationResultImageUrl(result) {
@@ -731,23 +740,33 @@ function DatasetDetailPage({ datasets, refresh }) {
       message.error(`训练选择设置失败：${error.message}`);
     }
   }
-  async function chooseDatasetImages() {
+  async function chooseDatasetImages(options = {}) {
     if (!dataset?.id) return;
+    const { folder = false } = options;
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*';
     input.multiple = true;
+    if (folder) {
+      input.setAttribute('webkitdirectory', '');
+      input.setAttribute('directory', '');
+    }
     input.onchange = async () => {
-      const files = Array.from(input.files || []);
-      if (!files.length) return;
+      const selectedFiles = Array.from(input.files || []);
+      if (!selectedFiles.length) return;
+      const imageFiles = selectedFiles.filter(isImageFile);
+      if (!imageFiles.length) {
+        message.warning(folder ? '所选文件夹里没有可上传的图片' : '请选择图片文件');
+        return;
+      }
       setUploadingImage(true);
       try {
         let payload;
-        for (const file of files) {
+        for (const file of imageFiles) {
           payload = await uploadDatasetImage(dataset.id, file);
         }
         if (payload?.images) setRows(payload.images);
-        message.success(`已上传 ${files.length} 张图片`);
+        message.success(`已上传 ${imageFiles.length} 张图片`);
       } catch (error) {
         message.error(`上传图片失败：${error.message}`);
       } finally {
@@ -755,6 +774,9 @@ function DatasetDetailPage({ datasets, refresh }) {
       }
     };
     input.click();
+  }
+  function chooseDatasetImageFolder() {
+    return chooseDatasetImages({ folder: true });
   }
   async function runLocalScreening() {
     const imageIds = actionImageIds();
@@ -803,7 +825,7 @@ function DatasetDetailPage({ datasets, refresh }) {
     }
   }
   if (!dataset) return <PageContainer title="数据集不存在"><Alert type="warning" message="请先创建数据集" /></PageContainer>;
-  return <PageContainer title={dataset.name} subTitle="当前数据集下的图片、caption 和选择状态。" onBack={() => window.history.back()}><div className="page-stack"><ProCard><Space wrap><Tag color="blue">{dataset.domain}</Tag><Tag>{dataset.trigger}</Tag><Tag color="green">{rows.filter((item) => trainingSelectedValue(item)).length} 张参与训练</Tag><Tag color="orange">{rows.filter((item) => annotationStatusValue(item) !== '已标注').length} 张未标注</Tag><Tag>{selectedRowKeys.length} 张已勾选</Tag></Space></ProCard><div className="dataset-image-layout"><ProCard title="数据集图片"><ProTable search={false} options={false} toolBarRender={() => [<Button key="upload" loading={uploadingImage} onClick={chooseDatasetImages}>上传图片</Button>, <Button key="select-all" disabled={!rows.length || selectedRowKeys.length === rows.length} onClick={selectAllImages}>全选全部</Button>, <Button key="clear-selection" disabled={!selectedRowKeys.length} onClick={clearImageSelection}>清空选择</Button>, <Button key="screen" type="primary" loading={screeningLoading} onClick={runLocalScreening}>本地初筛</Button>, <Button key="annotate" loading={annotatingLoading} onClick={runAgentAnnotation}>智能体标注</Button>, <Button key="include" loading={markingLoading} disabled={!selectedRowKeys.length} onClick={() => markSelectedImages(true, '')}>设置参与训练</Button>, <Button key="reject" danger loading={markingLoading} disabled={!selectedRowKeys.length} onClick={() => markSelectedImages(false, '用户手动设置：不参与训练')}>设置不参与训练</Button>]} rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys }} rowKey="id" size="middle" className="image-table" tableLayout="fixed" scroll={{ x: 1240 }} pagination={{ pageSize: 20, showSizeChanger: true }} dataSource={rows} locale={{ emptyText: <Alert type="info" showIcon message="该数据集还没有图片" description="先在视频页导入或下载视频并抽帧。" /> }} onRow={(item) => ({ onClick: () => { setActiveImageId(item.id); setDrawerOpen(true); } })} columns={[{ title: '图片', dataIndex: 'id', width: 128, render: (_, item) => <div className="image-table-thumb"><img src={imageFileUrl(item)} alt={`抽帧 ${item.timestampSec ?? ''} 秒`} loading="lazy" /></div> }, { title: '图片 ID', dataIndex: 'id', width: 260, ellipsis: true, render: (value) => <Text strong ellipsis={{ tooltip: value }}>{value}</Text> }, { title: '时间点', dataIndex: 'timestampSec', width: 90, render: (value) => `${value ?? '-'}s` }, { title: '初筛', width: 190, filters: screeningFilters, onFilter: (value, item) => imageHasLabel(item, value), render: (_, item) => { const labels = screeningIssueLabels(item); return labels.length ? <Space wrap size={[0, 4]}>{labels.map((label) => <React.Fragment key={label}>{screeningLabelTag(label)}</React.Fragment>)}</Space> : <Text type="secondary">-</Text>; } }, { title: 'LLM 分类', width: 120, filters: [{ text: '纯场景', value: 'scene' }, { text: '单人', value: 'single_person' }, { text: '多人', value: 'multi_person' }, { text: '物品', value: 'object' }, { text: '文字/图形', value: 'text_or_graphic' }, { text: '待LLM分类', value: 'unknown' }], onFilter: (value, item) => imageCategoryValue(item) === value, render: (_, item) => imageCategoryTag(imageCategoryValue(item)) }, { title: '标签', width: 220, filters: tagFilters, onFilter: (value, item) => imageTags(item).includes(value), render: (_, item) => { const tags = imageTags(item); return tags.length ? <Space wrap size={[0, 4]}>{tags.slice(0, 4).map((tag) => <Tag key={tag}>{tag}</Tag>)}</Space> : <Text type="secondary">-</Text>; } }, { title: '标注', dataIndex: 'annotation', width: 100, filters: [{ text: '未标注', value: '未标注' }, { text: '已标注', value: '已标注' }], onFilter: (value, item) => annotationStatusValue(item) === value, render: (_, item) => statusTag(annotationStatusValue(item)) }, { title: '质量', width: 100, filters: qualityFilters, onFilter: (value, item) => qualityScoreBand(imageQualityScore(item)) === value, render: (_, item) => qualityScoreTag(imageQualityScore(item)) }, { title: '训练选择', dataIndex: 'selected', width: 110, filters: [{ text: '参与训练', value: 'selected' }, { text: '不参与', value: 'rejected' }], onFilter: (value, item) => value === 'selected' ? trainingSelectedValue(item) : !trainingSelectedValue(item), render: (_, item) => trainingSelectedValue(item) ? <Tag color="green">是</Tag> : <Tag color="red">否</Tag> }, { title: '尺寸', width: 100, render: (_, item) => item.width && item.height ? `${item.width}x${item.height}` : '-' }]} /></ProCard><Drawer title="图片详情" open={Boolean(activeImage && drawerOpen)} onClose={() => setDrawerOpen(false)} width="50%" destroyOnHidden><ProCard title="图片标注" extra={activeImage?.captionLocked ? <Tag color="green">caption 已锁定</Tag> : <Tag color="orange">可编辑</Tag>}>{activeImage ? <div className="caption-editor"><div className="detail-preview"><Image src={imageFileUrl(activeImage)} alt={`当前图片 ${activeImage.timestampSec ?? ''} 秒`} preview={{ mask: '查看 / 缩放' }} /></div><Descriptions column={1} size="small" bordered><Descriptions.Item label="时间点">{activeImage.timestampSec ?? '-'}s</Descriptions.Item><Descriptions.Item label="本地初筛">{screeningIssueLabels(activeImage).length ? <Space wrap>{screeningIssueLabels(activeImage).map((label) => <React.Fragment key={label}>{screeningLabelTag(label)}</React.Fragment>)}</Space> : '-'}</Descriptions.Item><Descriptions.Item label="LLM 分类">{imageCategoryTag(imageCategoryValue(activeImage))}</Descriptions.Item><Descriptions.Item label="主体">{metadataText(activeImage.llmClassification?.subject)}</Descriptions.Item><Descriptions.Item label="场景">{metadataText(activeImage.llmClassification?.sceneType)}</Descriptions.Item><Descriptions.Item label="人数">{metadataText(activeImage.llmClassification?.peopleCount)}</Descriptions.Item><Descriptions.Item label="视角">{metadataText(activeImage.llmClassification?.viewAngle || activeImage.view)}</Descriptions.Item><Descriptions.Item label="标签">{metadataText(activeImage.llmClassification?.tags)}</Descriptions.Item><Descriptions.Item label="模型">{metadataText(activeImage.llmClassification?.model)}</Descriptions.Item><Descriptions.Item label="标注时间">{metadataText(activeImage.llmClassification?.runAt)}</Descriptions.Item><Descriptions.Item label="质量">{qualityScoreTag(imageQualityScore(activeImage))}</Descriptions.Item><Descriptions.Item label="标注状态">{statusTag(annotationStatusValue(activeImage))}</Descriptions.Item><Descriptions.Item label="训练选择">{trainingSelectedValue(activeImage) ? '是' : '否'}</Descriptions.Item></Descriptions><Text strong>最终训练描述</Text><TextArea rows={4} value={activeCaptionDraft} onChange={(event) => setActiveCaptionDraft(event.target.value)} /><div className="caption-suggestion"><Text strong>中文训练描述建议</Text><Paragraph>{activeCaptionSuggestion || '尚未生成建议'}</Paragraph></div><Space wrap><Button type="primary" onClick={saveActiveCaption}>保存标注</Button>{trainingSelectedValue(activeImage) ? <Button danger onClick={() => setActiveImageTrainingSelected(false)}>设置不参与训练</Button> : <Button onClick={() => setActiveImageTrainingSelected(true)}>设置参与训练</Button>}</Space></div> : <Alert type="info" showIcon message="请选择图片" />}</ProCard></Drawer></div></div></PageContainer>;
+  return <PageContainer title={dataset.name} subTitle="当前数据集下的图片、caption 和选择状态。" onBack={() => window.history.back()}><div className="page-stack"><ProCard><Space wrap><Tag color="blue">{dataset.domain}</Tag><Tag>{dataset.trigger}</Tag><Tag color="green">{rows.filter((item) => trainingSelectedValue(item)).length} 张参与训练</Tag><Tag color="orange">{rows.filter((item) => annotationStatusValue(item) !== '已标注').length} 张未标注</Tag><Tag>{selectedRowKeys.length} 张已勾选</Tag></Space></ProCard><div className="dataset-image-layout"><ProCard title="数据集图片"><ProTable search={false} options={false} toolBarRender={() => [<Button key="upload" loading={uploadingImage} onClick={() => chooseDatasetImages()}>上传图片</Button>, <Button key="upload-folder" loading={uploadingImage} onClick={chooseDatasetImageFolder}>上传文件夹</Button>, <Button key="select-all" disabled={!rows.length || selectedRowKeys.length === rows.length} onClick={selectAllImages}>全选全部</Button>, <Button key="clear-selection" disabled={!selectedRowKeys.length} onClick={clearImageSelection}>清空选择</Button>, <Button key="screen" type="primary" loading={screeningLoading} onClick={runLocalScreening}>本地初筛</Button>, <Button key="annotate" loading={annotatingLoading} onClick={runAgentAnnotation}>智能体标注</Button>, <Button key="include" loading={markingLoading} disabled={!selectedRowKeys.length} onClick={() => markSelectedImages(true, '')}>设置参与训练</Button>, <Button key="reject" danger loading={markingLoading} disabled={!selectedRowKeys.length} onClick={() => markSelectedImages(false, '用户手动设置：不参与训练')}>设置不参与训练</Button>]} rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys }} rowKey="id" size="middle" className="image-table" tableLayout="fixed" scroll={{ x: 1240 }} pagination={{ pageSize: 20, showSizeChanger: true }} dataSource={rows} locale={{ emptyText: <Alert type="info" showIcon message="该数据集还没有图片" description="先在视频页导入或下载视频并抽帧。" /> }} onRow={(item) => ({ onClick: () => { setActiveImageId(item.id); setDrawerOpen(true); } })} columns={[{ title: '图片', dataIndex: 'id', width: 128, render: (_, item) => <div className="image-table-thumb"><img src={imageFileUrl(item)} alt={`抽帧 ${item.timestampSec ?? ''} 秒`} loading="lazy" /></div> }, { title: '图片 ID', dataIndex: 'id', width: 260, ellipsis: true, render: (value) => <Text strong ellipsis={{ tooltip: value }}>{value}</Text> }, { title: '时间点', dataIndex: 'timestampSec', width: 90, render: (value) => `${value ?? '-'}s` }, { title: '初筛', width: 190, filters: screeningFilters, onFilter: (value, item) => imageHasLabel(item, value), render: (_, item) => { const labels = screeningIssueLabels(item); return labels.length ? <Space wrap size={[0, 4]}>{labels.map((label) => <React.Fragment key={label}>{screeningLabelTag(label)}</React.Fragment>)}</Space> : <Text type="secondary">-</Text>; } }, { title: 'LLM 分类', width: 120, filters: [{ text: '纯场景', value: 'scene' }, { text: '单人', value: 'single_person' }, { text: '多人', value: 'multi_person' }, { text: '物品', value: 'object' }, { text: '文字/图形', value: 'text_or_graphic' }, { text: '待LLM分类', value: 'unknown' }], onFilter: (value, item) => imageCategoryValue(item) === value, render: (_, item) => imageCategoryTag(imageCategoryValue(item)) }, { title: '标签', width: 220, filters: tagFilters, onFilter: (value, item) => imageTags(item).includes(value), render: (_, item) => { const tags = imageTags(item); return tags.length ? <Space wrap size={[0, 4]}>{tags.slice(0, 4).map((tag) => <Tag key={tag}>{tag}</Tag>)}</Space> : <Text type="secondary">-</Text>; } }, { title: '标注', dataIndex: 'annotation', width: 100, filters: [{ text: '未标注', value: '未标注' }, { text: '已标注', value: '已标注' }], onFilter: (value, item) => annotationStatusValue(item) === value, render: (_, item) => statusTag(annotationStatusValue(item)) }, { title: '质量', width: 100, filters: qualityFilters, onFilter: (value, item) => qualityScoreBand(imageQualityScore(item)) === value, render: (_, item) => qualityScoreTag(imageQualityScore(item)) }, { title: '训练选择', dataIndex: 'selected', width: 110, filters: [{ text: '参与训练', value: 'selected' }, { text: '不参与', value: 'rejected' }], onFilter: (value, item) => value === 'selected' ? trainingSelectedValue(item) : !trainingSelectedValue(item), render: (_, item) => trainingSelectedValue(item) ? <Tag color="green">是</Tag> : <Tag color="red">否</Tag> }, { title: '尺寸', width: 100, render: (_, item) => item.width && item.height ? `${item.width}x${item.height}` : '-' }]} /></ProCard><Drawer title="图片详情" open={Boolean(activeImage && drawerOpen)} onClose={() => setDrawerOpen(false)} width="50%" destroyOnHidden><ProCard title="图片标注" extra={activeImage?.captionLocked ? <Tag color="green">caption 已锁定</Tag> : <Tag color="orange">可编辑</Tag>}>{activeImage ? <div className="caption-editor"><div className="detail-preview"><Image src={imageFileUrl(activeImage)} alt={`当前图片 ${activeImage.timestampSec ?? ''} 秒`} preview={{ mask: '查看 / 缩放' }} /></div><Descriptions column={1} size="small" bordered><Descriptions.Item label="时间点">{activeImage.timestampSec ?? '-'}s</Descriptions.Item><Descriptions.Item label="本地初筛">{screeningIssueLabels(activeImage).length ? <Space wrap>{screeningIssueLabels(activeImage).map((label) => <React.Fragment key={label}>{screeningLabelTag(label)}</React.Fragment>)}</Space> : '-'}</Descriptions.Item><Descriptions.Item label="LLM 分类">{imageCategoryTag(imageCategoryValue(activeImage))}</Descriptions.Item><Descriptions.Item label="主体">{metadataText(activeImage.llmClassification?.subject)}</Descriptions.Item><Descriptions.Item label="场景">{metadataText(activeImage.llmClassification?.sceneType)}</Descriptions.Item><Descriptions.Item label="人数">{metadataText(activeImage.llmClassification?.peopleCount)}</Descriptions.Item><Descriptions.Item label="视角">{metadataText(activeImage.llmClassification?.viewAngle || activeImage.view)}</Descriptions.Item><Descriptions.Item label="标签">{metadataText(activeImage.llmClassification?.tags)}</Descriptions.Item><Descriptions.Item label="模型">{metadataText(activeImage.llmClassification?.model)}</Descriptions.Item><Descriptions.Item label="标注时间">{metadataText(activeImage.llmClassification?.runAt)}</Descriptions.Item><Descriptions.Item label="质量">{qualityScoreTag(imageQualityScore(activeImage))}</Descriptions.Item><Descriptions.Item label="标注状态">{statusTag(annotationStatusValue(activeImage))}</Descriptions.Item><Descriptions.Item label="训练选择">{trainingSelectedValue(activeImage) ? '是' : '否'}</Descriptions.Item></Descriptions><Text strong>最终训练描述</Text><TextArea rows={4} value={activeCaptionDraft} onChange={(event) => setActiveCaptionDraft(event.target.value)} /><div className="caption-suggestion"><Text strong>中文训练描述建议</Text><Paragraph>{activeCaptionSuggestion || '尚未生成建议'}</Paragraph></div><Space wrap><Button type="primary" onClick={saveActiveCaption}>保存标注</Button>{trainingSelectedValue(activeImage) ? <Button danger onClick={() => setActiveImageTrainingSelected(false)}>设置不参与训练</Button> : <Button onClick={() => setActiveImageTrainingSelected(true)}>设置参与训练</Button>}</Space></div> : <Alert type="info" showIcon message="请选择图片" />}</ProCard></Drawer></div></div></PageContainer>;
 }
 
 function AnnotationRuntimeCard() {
@@ -1067,6 +1089,7 @@ export default function App() {
   const data = useLocalData();
   return <ProLayout className="app-layout" title="Qwen Image LoRA" logo={false} route={route} location={location} layout="mix" fixedHeader siderWidth={232} menuItemRender={(item, dom) => <a onClick={() => navigate(item.path || '/dashboard')}>{dom}</a>} token={{ header: { colorBgHeader: '#ffffff' }, sider: { colorMenuBackground: '#ffffff' } }}><AppRoutes data={data} /></ProLayout>;
 }
+
 
 
 
